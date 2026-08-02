@@ -164,6 +164,6 @@ class StStatusService:
     def _fmt(v) -> Optional[str]:
         """把 tushare 返回的日期值统一格式化为 YYYY-MM-DD；空值/None/nan 返回 None。"""
         s = str(v).strip() if v is not None else ""
-        if not s or s in ("None", "nan"):
+        if not s or s in ("None", "nan", "NaT"):
             return None
         return f"{s[:4]}-{s[4:6]}-{s[6:8]}" if len(s) == 8 else s

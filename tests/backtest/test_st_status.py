@@ -114,6 +114,11 @@ def test_fmt_date_more_cases():
     assert StStatusService._fmt("2020-01-01") == "2020-01-01"
 
 
+def test_fmt_date_nat_is_none():
+    """pandas 缺失日期常表现为字符串 "NaT"（Not a Time），也应识别为空返回 None。"""
+    assert StStatusService._fmt("NaT") is None
+
+
 # ==================== _save_periods：upsert 行为（假 collection，无需真实数据库） ====================
 
 class _FakeBulkWriteResult:
