@@ -74,26 +74,29 @@ class RuleStrategy(SignalSource):
         return _val(self.ind, name, i)
 
     def _eval_one(self, c: Condition, i: int) -> bool:
+        if c.op not in ("<", ">", "cross_up", "cross_down"):
+            raise ValueError(f"非法 op: {c.op!r}，期望 '>'、'<'、'cross_up' 或 'cross_down'")
+        left_series = self.close if c.left == "close" else self.ind.get(c.left)
+        if left_series is None:
+            return False
+        if c.op in ("cross_up", "cross_down"):
+            right_series = self.close if c.right == "close" else self.ind.get(c.right)
+            if right_series is None:
+                return False
+            if c.op == "cross_up":
+                return cross_up(left_series, right_series, i)
+            return cross_down(left_series, right_series, i)
         left_now = self._series(c.left, i)
         if left_now is None:
             return False
-        if c.op in ("cross_up", "cross_down"):
-            if i == 0:
-                return False
-            left_prev = self._series(c.left, i - 1)
-            right_now = self._series(c.right, i)
-            right_prev = self._series(c.right, i - 1)
-            if None in (left_prev, right_now, right_prev):
-                return False
-            if c.op == "cross_up":
-                return left_prev <= right_prev and left_now > right_now
-            return left_prev >= right_prev and left_now < right_now
         right = self._series(c.right, i) if isinstance(c.right, str) else c.right
         if right is None:
             return False
         return left_now > right if c.op == ">" else left_now < right
 
     def _eval_group(self, rules, logic, i) -> bool:
+        if logic not in ("AND", "OR"):
+            raise ValueError(f"非法 logic: {logic!r}，期望 'AND' 或 'OR'")
         if not rules:
             return False
         results = [self._eval_one(c, i) for c in rules]
