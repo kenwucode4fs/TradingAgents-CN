@@ -76,6 +76,22 @@ class TestEMA:
         assert all(isinstance(v, (float, type(None))) for v in ind["ema12"])
         assert all(isinstance(v, (float, type(None))) for v in ind["ema26"])
 
+    def test_ema_constant_series(self):
+        """测试常数序列的 EMA：所有值应相等。"""
+        # 常数序列：收盘价全是 10.0
+        bars = _bars([10.0] * 30)
+        ind = compute_indicators(bars)
+
+        # 当所有值都相等时，EMA 也应该等于该值
+        # 前几个值会趋向 10.0，之后应该精确等于 10.0
+        for i in range(5, len(ind["ema12"])):  # 跳过前几个稳定期
+            assert abs(ind["ema12"][i] - 10.0) < 0.01, \
+                f"ema12[{i}] = {ind['ema12'][i]}, expected ~10.0"
+
+        for i in range(10, len(ind["ema26"])):  # ema26 需要更多稳定期
+            assert abs(ind["ema26"][i] - 10.0) < 0.01, \
+                f"ema26[{i}] = {ind['ema26'][i]}, expected ~10.0"
+
 
 class TestMACD:
     """测试 MACD 指标。"""
@@ -94,9 +110,84 @@ class TestMACD:
         assert len(ind["macd_dea"]) == len(bars)
         assert len(ind["macd_bar"]) == len(bars)
 
+    def test_macd_constant_series(self):
+        """测试常数序列的 MACD：DIF、DEA、BAR 都应为 0。"""
+        # 常数序列：收盘价全是 100.0
+        bars = _bars([100.0] * 50)
+        ind = compute_indicators(bars)
+
+        # 当所有值都相等时，EMA12==EMA26，所以 DIF=0，DEA=0，BAR=0
+        for i in range(20, len(ind["macd_dif"])):  # 跳过前几个稳定期
+            assert abs(ind["macd_dif"][i]) < 0.001, \
+                f"macd_dif[{i}] = {ind['macd_dif'][i]}, expected ~0"
+            assert abs(ind["macd_dea"][i]) < 0.001, \
+                f"macd_dea[{i}] = {ind['macd_dea'][i]}, expected ~0"
+            assert abs(ind["macd_bar"][i]) < 0.001, \
+                f"macd_bar[{i}] = {ind['macd_bar'][i]}, expected ~0"
+
+    def test_macd_bar_structure(self):
+        """测试 MACD 柱状体结构：bar = (dif - dea) * 2。"""
+        bars = _bars(list(range(1, 51)))
+        ind = compute_indicators(bars)
+
+        # 验证 bar = (dif - dea) * 2
+        for i in range(len(bars)):
+            if (ind["macd_dif"][i] is not None and
+                ind["macd_dea"][i] is not None and
+                ind["macd_bar"][i] is not None):
+                expected_bar = (ind["macd_dif"][i] - ind["macd_dea"][i]) * 2
+                assert abs(ind["macd_bar"][i] - expected_bar) < 0.001, \
+                    f"macd_bar[{i}] relationship failed"
+
 
 class TestRSI:
     """测试相对强弱指数 RSI。"""
+
+    def test_rsi_continuous_rise(self):
+        """测试连续上涨序列：RSI 应为 100（窗口填满后）。"""
+        # 连续上涨
+        bars = _bars([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0,
+                       11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0, 20.0])
+        ind = compute_indicators(bars)
+
+        # 前 6 个应为 None（diff 产生第一个 NaN，rolling(6) 需要 6 个非 NaN 值）
+        for i in range(6):
+            assert ind["rsi6"][i] is None, f"rsi6[{i}] should be None"
+
+        # 从位置 6 开始应为 100（全是上涨）
+        for i in range(6, len(ind["rsi6"])):
+            assert ind["rsi6"][i] == 100.0, f"rsi6[{i}] should be 100, got {ind['rsi6'][i]}"
+
+        # 前 14 个应为 None（rolling(14) 需要 14 个非 NaN 值）
+        for i in range(14):
+            assert ind["rsi14"][i] is None
+
+        # 从位置 14 开始应为 100
+        for i in range(14, len(ind["rsi14"])):
+            assert ind["rsi14"][i] == 100.0, f"rsi14[{i}] should be 100, got {ind['rsi14'][i]}"
+
+    def test_rsi_continuous_decline(self):
+        """测试连续下跌序列：RSI 应为 0（窗口填满后）。"""
+        # 连续下跌
+        bars = _bars([20.0, 19.0, 18.0, 17.0, 16.0, 15.0, 14.0, 13.0, 12.0, 11.0,
+                       10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0])
+        ind = compute_indicators(bars)
+
+        # 前 6 个应为 None
+        for i in range(6):
+            assert ind["rsi6"][i] is None
+
+        # 从位置 6 开始应为 0（全是下跌）
+        for i in range(6, len(ind["rsi6"])):
+            assert ind["rsi6"][i] == 0.0, f"rsi6[{i}] should be 0, got {ind['rsi6'][i]}"
+
+    def test_rsi_window_insufficient(self):
+        """测试窗口不足时确实为 None。"""
+        bars = _bars([1, 2, 3, 4, 5])
+        ind = compute_indicators(bars)
+
+        # rsi14 需要 14 日，现在只有 5 日，全部应为 None
+        assert all(v is None for v in ind["rsi14"])
 
     def test_rsi_basic(self):
         """测试 RSI 基本计算。"""
@@ -111,15 +202,6 @@ class TestRSI:
         # 长度应与 bars 等长
         assert len(ind["rsi6"]) == len(bars)
         assert len(ind["rsi12"]) == len(bars)
-        assert len(ind["rsi14"]) == len(bars)
-
-    def test_rsi_no_nan(self):
-        """测试 RSI 不产生 NaN（避免除零）。"""
-        # 常数序列（所有收盘价相同），RSI 应为 None 或 NaN 的处理
-        bars = _bars([5.0] * 20)
-        ind = compute_indicators(bars)
-
-        # 长度应正确
         assert len(ind["rsi14"]) == len(bars)
 
 

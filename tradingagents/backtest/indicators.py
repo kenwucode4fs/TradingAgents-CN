@@ -12,13 +12,19 @@ def _rsi(close: pd.Series, n: int) -> pd.Series:
         n: RSI 周期
 
     Returns:
-        RSI 序列
+        RSI 序列。窗口不足时为 NaN（后续转 None），
+        连续上涨（loss==0）时为 100，连续下跌（gain==0）时为 0。
     """
     delta = close.diff()
     gain = delta.clip(lower=0).rolling(n).mean()
     loss = (-delta.clip(upper=0)).rolling(n).mean()
-    rs = gain / loss.replace(0, pd.NA)
-    return 100 - 100 / (1 + rs)
+    rs = gain / loss
+    rsi = 100 - 100 / (1 + rs)
+    # 当 loss==0（全上涨）时，rs=inf → rsi=100，或 gain==loss==0→rsi=nan，都设为 100
+    rsi = rsi.where(loss != 0, 100.0)
+    # 窗口不足时（loss.isna()）保持 NaN
+    rsi = rsi.mask(loss.isna())
+    return rsi
 
 
 def compute_indicators(bars: List[Bar]) -> dict:
