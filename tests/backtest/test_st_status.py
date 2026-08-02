@@ -53,11 +53,52 @@ def test_is_st_unknown_symbol_returns_false():
     assert svc.is_st("999999", "2020-06-15") is False
 
 
+def test_is_st_multiple_non_adjacent_periods():
+    """同一股票存在两段不相邻的 ST 区间时，区间内均命中，区间之间与之外均不命中"""
+    svc = StStatusService()
+    svc._periods_cache = {
+        "000980": [
+            {"start_date": "2003-04-10", "end_date": "2003-05-11", "name": "ST金马"},
+            {"start_date": "2020-06-24", "end_date": "2022-05-19", "name": "*ST众泰"},
+        ]
+    }
+    # 第一段区间内
+    assert svc.is_st("000980", "2003-04-10") is True  # 第一段起始日
+    assert svc.is_st("000980", "2003-05-11") is True  # 第一段结束日
+    # 两段之间的空档
+    assert svc.is_st("000980", "2003-05-12") is False
+    assert svc.is_st("000980", "2010-01-01") is False
+    # 第二段区间内
+    assert svc.is_st("000980", "2020-06-24") is True  # 第二段起始日
+    assert svc.is_st("000980", "2021-06-15") is True
+    assert svc.is_st("000980", "2022-05-19") is True  # 第二段结束日
+    # 第二段之后
+    assert svc.is_st("000980", "2022-05-20") is False
+
+
 # ==================== Step 6：_to_ts_code / _fmt 纯函数单测 ====================
 
 def test_to_ts_code():
     assert StStatusService._to_ts_code("600000") == "600000.SH"
     assert StStatusService._to_ts_code("000001") == "000001.SZ"
+
+
+def test_to_ts_code_beijing_exchange():
+    """北交所代码（8/4 开头，含历史三板转板 43/83/87，以及 920 开头新股）应映射为 .BJ
+
+    回归背景：原实现只做了"6 开头 -> .SH，其余 -> .SZ"的二分映射，会把北交所
+    代码错误映射成 .SZ，导致 sync_from_tushare 对北交所 ST 股票静默拿不到
+    namechange 数据（namechange 找不到对应 .SZ 代码，返回空/无关数据）。
+    """
+    assert StStatusService._to_ts_code("830799") == "830799.BJ"  # 8 开头，北交所常规代码
+    assert StStatusService._to_ts_code("430047") == "430047.BJ"  # 4 开头，历史新三板代码
+    assert StStatusService._to_ts_code("870656") == "870656.BJ"  # 87 开头，三板转北交所
+    assert StStatusService._to_ts_code("920819") == "920819.BJ"  # 920 开头，北交所直接 IPO 新股
+    # 原有沪深映射不应回归
+    assert StStatusService._to_ts_code("600000") == "600000.SH"
+    assert StStatusService._to_ts_code("688981") == "688981.SH"  # 科创板仍归上交所
+    assert StStatusService._to_ts_code("000001") == "000001.SZ"
+    assert StStatusService._to_ts_code("300750") == "300750.SZ"
 
 
 def test_fmt_date():

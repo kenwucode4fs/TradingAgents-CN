@@ -145,12 +145,20 @@ class StStatusService:
 
     @staticmethod
     def _to_ts_code(symbol: str) -> str:
-        """股票代码 -> tushare ts_code（6 开头视为上交所，其余视为深交所）。
+        """股票代码 -> tushare ts_code。
 
-        注：这是简化映射，未覆盖北交所（8/4 开头）等小众前缀；当前仅服务于
-        沪深主板/创业板/科创板 ST 状态同步场景。
+        前缀判定与项目现有约定保持一致（参考 `app/services/basics_sync_service.py`
+        的 `_generate_full_symbol`）：
+        - 北交所：8/4 开头（含历史新三板转板代码 43/83/87），以及 2023 年后
+          北交所直接 IPO 的 920 开头新股 -> `.BJ`
+        - 上交所：6 开头（含科创板 688） -> `.SH`
+        - 其余（深交所主板/创业板等 0/3 开头） -> `.SZ`
         """
-        return f"{symbol}.SH" if symbol.startswith("6") else f"{symbol}.SZ"
+        if symbol.startswith(("8", "4", "920")):
+            return f"{symbol}.BJ"
+        if symbol.startswith("6"):
+            return f"{symbol}.SH"
+        return f"{symbol}.SZ"
 
     @staticmethod
     def _fmt(v) -> Optional[str]:
