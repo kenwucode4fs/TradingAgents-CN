@@ -183,8 +183,11 @@ class TushareAdapter(DataSourceAdapter):
             prov = self._provider
             if prov is None or prov.api is None:
                 return None
-            # normalize ts_code
-            ts_code = prov._normalize_symbol(code) if hasattr(prov, "_normalize_symbol") else code
+            # 🔥 修复：TushareProvider 上真正存在的方法是 _normalize_ts_code（不是
+            # _normalize_symbol），旧代码里 hasattr 检查恒为 False，导致传给
+            # pro_bar 的 ts_code 一直是裸代码（如 "000001"），pro_bar 无法识别
+            # 从而静默返回空数据。
+            ts_code = prov._normalize_ts_code(code) if hasattr(prov, "_normalize_ts_code") else code
             # map period -> freq
             freq_map = {
                 "day": "D",
