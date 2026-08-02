@@ -122,6 +122,71 @@ def test_equity_curve_length_matches_bars():
     assert out["trades"] == []
 
 
+def test_pending_buy_overridden_by_reverse_signal_yields_no_trade():
+    """顺延中的 BUY 挂单被反向 SELL 信号覆盖后，未持仓时 SELL 是安全死单。
+
+    场景：第0日决策 BUY；第1日一字涨停买不进（挂单顺延），但第1日收盘策略
+    又改口给出 SELL（此时仍未持仓）——按当前状态机语义，非 HOLD 信号会覆盖
+    挂单，pending 变为 SELL。之后每日尝试撮合该 SELL，但 broker.try_sell
+    在未持仓（shares<=0）时始终返回 False，因此绝不会产生任何成交，更不会
+    做空。此测试锁定这条状态机最脆弱的路径，防止未来修改 try_sell 的前置
+    检查时悄悄劣化为错误做空。
+    """
+    bars = [_bar("2020-03-02", 10, 10, 10),
+            _bar("2020-03-03", 11, 11, 10),   # 一字涨停，BUY 挂单顺延
+            _bar("2020-03-04", 10.5, 10.5, 10.8),
+            _bar("2020-03-05", 10, 10, 10)]
+
+    class ReverseWithoutPosition:
+        def __init__(self, b):
+            self.b = b
+
+        def decide(self, i):
+            if i == 0 and not self.b.in_position():
+                return Action.BUY
+            if i == 1:
+                # 未持仓状态下反悔给出 SELL，覆盖尚未成交的 BUY 挂单
+                return Action.SELL
+            return Action.HOLD
+
+    broker = Broker(100000, CostConfig(), PositionConfig(parts=1), "600000")
+    out = run_loop(bars, lambda b: ReverseWithoutPosition(b), broker)
+
+    # 未持仓时的 SELL 挂单必须是安全死单：不产生任何成交，不做空。
+    assert broker.trades == []
+    assert broker.shares == 0
+    assert broker.cash == 100000.0
+    assert all(eq == 100000.0 for _, eq in out["equity_curve"])
+
+
+def test_sell_postponed_on_limit_down():
+    """对称场景：持仓后卖出信号遇一字跌停不能卖 → 顺延到再下一日开盘成交。"""
+    bars = [_bar("2020-03-02", 10, 10, 10),
+            _bar("2020-03-03", 10, 12, 10),    # 次日开盘买入成交
+            _bar("2020-03-04", 9, 9, 10),      # 第2日收盘决策卖出；第3日一字跌停(9<=10*0.9)
+            _bar("2020-03-05", 9.5, 9.5, 9)]   # 复牌可交易，跌停顺延到此日成交
+
+    class BuyThenSellLimitDown:
+        def __init__(self, b):
+            self.b = b
+
+        def decide(self, i):
+            if i == 0 and not self.b.in_position():
+                return Action.BUY
+            if i == 1 and self.b.in_position():
+                return Action.SELL
+            return Action.HOLD
+
+    broker = Broker(100000, CostConfig(), PositionConfig(parts=1), "600000")
+    run_loop(bars, lambda b: BuyThenSellLimitDown(b), broker)
+
+    assert len(broker.trades) == 2
+    assert broker.trades[0].side == "buy"
+    assert broker.trades[1].side == "sell"
+    assert broker.trades[1].date == "2020-03-05"   # 跌停日跳过，顺延成交
+    assert broker.trades[1].price == 9.5
+
+
 def test_return_dict_keys():
     """返回值结构：equity_curve 与 trades 两个键，trades 与 broker.trades 是同一对象。"""
     bars = [_bar("2020-03-02", 10, 10, 10)]

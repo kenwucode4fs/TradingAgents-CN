@@ -26,6 +26,9 @@ def run_loop(bars: List[Bar], strategy_factory: Callable, broker: Broker) -> dic
 
     Returns:
         {"equity_curve": [(date, equity), ...], "trades": broker.trades}
+        注意：``trades`` 是 ``broker.trades`` 的同一引用（非拷贝），调用方
+        若在 run_loop 返回后继续复用同一 broker 实例，对该 broker 后续的
+        交易会同步反映到此前取得的返回值里；如需快照请自行 ``list(...)``。
     """
     strategy = strategy_factory(broker)
     equity_curve: List[Tuple[str, float]] = []
