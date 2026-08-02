@@ -1590,7 +1590,8 @@ async def run_tushare_news_sync(hours_back: int = 24, max_news_per_stock: int = 
 
 async def run_full_a_share_sync(
     incremental: bool = False,
-    qfq_rate_limit_per_min: int = 120
+    qfq_rate_limit_per_min: int = 120,
+    start_date: str = None
 ) -> Dict[str, Any]:
     """
     全量A股历史数据同步编排入口（原始日线 + 前复权价），供回测引擎使用
@@ -1629,7 +1630,8 @@ async def run_full_a_share_sync(
 
     logger.info("📊 [阶段一/二] 同步原始日线历史数据...")
     historical_stats = await service.sync_historical_data(
-        all_history=not incremental,
+        start_date=start_date,
+        all_history=(not incremental and start_date is None),
         incremental=incremental,
         job_id="full_a_share_sync_historical"
     )
