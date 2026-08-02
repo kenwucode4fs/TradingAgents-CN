@@ -13,7 +13,7 @@ from app.services.historical_data_service import get_historical_data_service
 from app.services.news_data_service import get_news_data_service
 from app.core.database import get_mongo_db
 from app.core.config import settings
-from app.core.rate_limiter import get_tushare_rate_limiter
+from app.core.rate_limiter import get_tushare_rate_limiter, RateLimiter
 from app.utils.timezone import now_tz
 
 logger = logging.getLogger(__name__)
@@ -540,6 +540,45 @@ class TushareSyncService:
 
     # ==================== 历史数据同步 ====================
 
+    async def _get_all_a_share_symbols(self) -> List[str]:
+        """
+        获取全部A股股票代码（排除退市股票）
+
+        从 `stock_basic_info` 集合筛选：市场为 CN（兼容新旧数据结构：
+        market_info.market / category / market 字段），且排除 status == "D"
+        （退市）的股票。供 `sync_historical_data`（symbols=None 时）和
+        `sync_all_qfq`（symbols=None 时）复用，避免同一套过滤逻辑维护两份。
+
+        Returns:
+            股票代码列表（如 ["000001", "600000", ...]）
+        """
+        # 查询所有A股股票（兼容不同的数据结构），排除退市股票
+        # 优先使用 market_info.market，降级到 category 字段
+        cursor = self.db.stock_basic_info.find(
+            {
+                "$and": [
+                    {
+                        "$or": [
+                            {"market_info.market": "CN"},  # 新数据结构
+                            {"category": "stock_cn"},      # 旧数据结构
+                            {"market": {"$in": ["主板", "创业板", "科创板", "北交所"]}}  # 按市场类型
+                        ]
+                    },
+                    # 排除退市股票
+                    {
+                        "$or": [
+                            {"status": {"$ne": "D"}},  # status 不是 D（退市）
+                            {"status": {"$exists": False}}  # 或者 status 字段不存在
+                        ]
+                    }
+                ]
+            },
+            {"code": 1}
+        )
+        symbols = [doc["code"] async for doc in cursor]
+        logger.info(f"📋 从 stock_basic_info 获取到 {len(symbols)} 只股票（已排除退市股票）")
+        return symbols
+
     async def sync_historical_data(
         self,
         symbols: List[str] = None,
@@ -580,31 +619,7 @@ class TushareSyncService:
         try:
             # 1. 获取股票列表（排除退市股票）
             if symbols is None:
-                # 查询所有A股股票（兼容不同的数据结构），排除退市股票
-                # 优先使用 market_info.market，降级到 category 字段
-                cursor = self.db.stock_basic_info.find(
-                    {
-                        "$and": [
-                            {
-                                "$or": [
-                                    {"market_info.market": "CN"},  # 新数据结构
-                                    {"category": "stock_cn"},      # 旧数据结构
-                                    {"market": {"$in": ["主板", "创业板", "科创板", "北交所"]}}  # 按市场类型
-                                ]
-                            },
-                            # 排除退市股票
-                            {
-                                "$or": [
-                                    {"status": {"$ne": "D"}},  # status 不是 D（退市）
-                                    {"status": {"$exists": False}}  # 或者 status 字段不存在
-                                ]
-                            }
-                        ]
-                    },
-                    {"code": 1}
-                )
-                symbols = [doc["code"] async for doc in cursor]
-                logger.info(f"📋 从 stock_basic_info 获取到 {len(symbols)} 只股票（已排除退市股票）")
+                symbols = await self._get_all_a_share_symbols()
 
             stats["total_processed"] = len(symbols)
 
@@ -896,6 +911,154 @@ class TushareSyncService:
         saved = await self.historical_service.merge_qfq_prices(symbol, records)
         logger.info(f"✅ {symbol} 前复权价同步完成: {saved}/{len(records)} 条记录已更新")
         return {"symbol": symbol, "saved": saved}
+
+    async def sync_all_qfq(
+        self,
+        symbols: List[str] = None,
+        rate_limit_per_min: int = 120,
+        resume: bool = True,
+        job_id: str = None
+    ) -> Dict[str, Any]:
+        """
+        批量补全全市场A股的前复权（qfq）历史价格
+
+        对每只股票调用 `sync_historical_qfq` 补全 stock_daily_quotes 中的
+        open_qfq/high_qfq/low_qfq/close_qfq 字段（回测引擎必需）。
+
+        稳健性设计（全量跑 1-2 小时，务必不能因为单只股票异常或触发限流而中断）：
+        - 限流：用 `RateLimiter`（滑动窗口，内部通过 asyncio.sleep 等待）把整体调用频率
+          控制在 rate_limit_per_min 次/分钟以内（2000积分账号保守默认 120，即约 2 次/秒）。
+        - 断点续传：用 MongoDB `sync_progress` 集合记录每只股票的同步状态
+          （symbol/status(done|failed)/updated_at/error），resume=True 时跳过
+          status == "done" 的股票，中途崩溃重启后可以从断点继续，不必推倒重来。
+        - 错误隔离：单只股票同步失败只记录 failed + error 原因，立即继续下一只，
+          绝不因为个别股票（停牌、退市、数据异常等）中断整个批次。
+
+        Args:
+            symbols: 股票代码列表；为 None 时复用 `_get_all_a_share_symbols()` 获取全部A股
+            rate_limit_per_min: 每分钟最大调用次数（默认 120，对应 Tushare 2000 积分档保守限流）
+            resume: 是否启用断点续传（跳过 sync_progress 中已 status=="done" 的股票）
+            job_id: 任务ID（用于对接 scheduler 的取消/进度跟踪，可选）
+
+        Returns:
+            {"total": 总数, "done": 成功数, "failed": 失败数, "skipped": 跳过数}
+        """
+        logger.info(
+            f"🔄 开始批量同步全市场前复权价 (rate_limit={rate_limit_per_min}次/分钟, resume={resume})..."
+        )
+
+        if symbols is None:
+            symbols = await self._get_all_a_share_symbols()
+
+        total = len(symbols)
+        stats: Dict[str, Any] = {"total": total, "done": 0, "failed": 0, "skipped": 0}
+
+        if total == 0:
+            logger.warning("⚠️ 没有找到需要同步前复权价的股票")
+            return stats
+
+        task_name = "sync_all_qfq"
+        progress_collection = self.db.sync_progress
+
+        # 确保 (task, symbol) 唯一索引存在，便于 upsert 记录同步状态
+        try:
+            await progress_collection.create_index(
+                [("task", 1), ("symbol", 1)],
+                unique=True,
+                name="task_symbol_unique",
+                background=True
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ 创建 sync_progress 索引失败（可能已存在）: {e}")
+
+        # 断点续传：查出已完成的股票集合，本轮直接跳过
+        done_symbols: set = set()
+        if resume:
+            cursor = progress_collection.find(
+                {"task": task_name, "status": "done", "symbol": {"$in": symbols}},
+                {"symbol": 1}
+            )
+            done_symbols = {doc["symbol"] async for doc in cursor}
+            if done_symbols:
+                logger.info(f"⏭️ 断点续传：检测到 {len(done_symbols)} 只股票已完成，本轮将跳过")
+
+        # 限流器：滑动窗口，max_calls 次 / 60 秒，超限时内部用 asyncio.sleep 等待
+        limiter = RateLimiter(
+            max_calls=max(1, rate_limit_per_min),
+            time_window=60.0,
+            name="sync_all_qfq"
+        )
+
+        start_date = "1990-01-01"
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        log_every = 20
+
+        for i, symbol in enumerate(symbols):
+            # 检查是否需要退出（对接 scheduler 的取消信号）
+            if job_id and await self._should_stop(job_id):
+                logger.warning(f"⚠️ 任务 {job_id} 收到停止信号，正在退出...")
+                stats["stopped"] = True
+                break
+
+            if resume and symbol in done_symbols:
+                stats["skipped"] += 1
+                continue
+
+            try:
+                # 速率限制：控制整体调用频率不超过 rate_limit_per_min 次/分钟
+                await limiter.acquire()
+
+                await self.sync_historical_qfq(symbol, start_date, end_date)
+
+                await progress_collection.update_one(
+                    {"task": task_name, "symbol": symbol},
+                    {
+                        "$set": {
+                            "status": "done",
+                            "error": None,
+                            "updated_at": get_utc8_now(),
+                        }
+                    },
+                    upsert=True
+                )
+                stats["done"] += 1
+
+            except Exception as e:
+                # 🔥 错误隔离：单只失败只记录，绝不中断整体批次
+                logger.error(f"❌ {symbol} 前复权价同步失败: {e}")
+                try:
+                    await progress_collection.update_one(
+                        {"task": task_name, "symbol": symbol},
+                        {
+                            "$set": {
+                                "status": "failed",
+                                "error": str(e),
+                                "updated_at": get_utc8_now(),
+                            }
+                        },
+                        upsert=True
+                    )
+                except Exception as progress_error:
+                    logger.error(f"❌ 记录 {symbol} 失败状态时出错: {progress_error}")
+                stats["failed"] += 1
+
+            processed = stats["done"] + stats["failed"] + stats["skipped"]
+            if processed % log_every == 0 or processed == total:
+                logger.info(
+                    f"📈 前复权价同步进度: 已完成 {processed}/{total} "
+                    f"(成功: {stats['done']}, 失败: {stats['failed']}, 跳过: {stats['skipped']})"
+                )
+                if job_id:
+                    progress_percent = int(processed / total * 100)
+                    await self._update_progress(
+                        job_id, progress_percent, f"前复权价同步 {processed}/{total}"
+                    )
+
+        logger.info(
+            f"✅ 前复权价批量同步完成: 总计 {stats['total']}, 成功 {stats['done']}, "
+            f"失败 {stats['failed']}, 跳过 {stats['skipped']}"
+        )
+        return stats
 
     # ==================== 财务数据同步 ====================
 
@@ -1421,3 +1584,78 @@ async def run_tushare_news_sync(hours_back: int = 24, max_news_per_stock: int = 
     except Exception as e:
         logger.error(f"❌ Tushare新闻数据同步失败: {e}")
         raise
+
+
+# ==================== 全量A股历史数据同步编排（回测引擎） ====================
+
+async def run_full_a_share_sync(
+    incremental: bool = False,
+    qfq_rate_limit_per_min: int = 120
+) -> Dict[str, Any]:
+    """
+    全量A股历史数据同步编排入口（原始日线 + 前复权价），供回测引擎使用
+
+    分两个阶段依次执行：
+    1. `sync_historical_data`：同步原始日线（open/high/low/close/volume 等）
+    2. `sync_all_qfq`：补全前复权价（open_qfq/high_qfq/low_qfq/close_qfq），
+       回测引擎的数据层（tradingagents/backtest/data_feed.py）要求这些字段非空
+
+    Args:
+        incremental: 增量 or 全量
+            - False（默认）：`sync_historical_data(all_history=True)` 全量拉取每只
+              股票从上市以来的全部日线（首次建库/大补漏场景，耗时 1-2 小时，
+              需手动触发，不建议在调度器里跑）
+            - True：`sync_historical_data(incremental=True)` 只拉取每只股票最后
+              日期之后的新增日线（收盘后每日调度场景，耗时短）
+        qfq_rate_limit_per_min: 透传给 `sync_all_qfq` 的每分钟最大调用次数
+
+              同时，daily 场景下会先清空 `sync_progress` 中 task="sync_all_qfq"
+              的记录，再以 resume=True 重新跑一遍全部股票的前复权价。
+              原因：前复权价会随除权除息事件"回溯改写"历史价格，不能像原始
+              日线那样只追加最后几天；`sync_all_qfq` 的断点续传（resume）语义
+              是"同一轮内跳过已完成的，避免进程崩溃后从头重来"，而不是
+              "第一次跑完之后永久跳过"——如果不重置，daily 任务在首次全量
+              backfill 完成后就会因为所有股票都已 status=="done" 而永远不再
+              更新，当日最新前复权价将无法入库。
+              代价：如果同一天内 daily 任务被人工重跑，会丢失当天已跑的进度、
+              从头开始；对每天只跑一次的调度场景可接受。
+
+    Returns:
+        {"historical": sync_historical_data 的统计, "qfq": sync_all_qfq 的统计}
+    """
+    logger.info(f"🚀 开始全量A股历史数据同步编排 (incremental={incremental})")
+
+    service = await get_tushare_sync_service()
+
+    logger.info("📊 [阶段一/二] 同步原始日线历史数据...")
+    historical_stats = await service.sync_historical_data(
+        all_history=not incremental,
+        incremental=incremental,
+        job_id="full_a_share_sync_historical"
+    )
+    logger.info(f"✅ [阶段一/二] 原始日线同步完成: {historical_stats}")
+
+    if incremental:
+        # daily 场景：重置上一次的 qfq 进度记录，确保今天的前复权价会被重新计算
+        try:
+            delete_result = await service.db.sync_progress.delete_many({"task": "sync_all_qfq"})
+            logger.info(
+                f"🔄 [阶段二/二] daily 前复权价同步：已重置 {delete_result.deleted_count} 条历史进度记录"
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ 重置 sync_progress 失败（不影响本轮同步，仅可能导致误跳过）: {e}")
+
+    logger.info("📊 [阶段二/二] 同步前复权价...")
+    qfq_stats = await service.sync_all_qfq(
+        rate_limit_per_min=qfq_rate_limit_per_min,
+        resume=True,
+        job_id="full_a_share_sync_qfq"
+    )
+    logger.info(f"✅ [阶段二/二] 前复权价同步完成: {qfq_stats}")
+
+    logger.info(
+        f"🎉 全量A股历史数据同步编排完成 "
+        f"(historical: 成功{historical_stats.get('success_count')}/{historical_stats.get('total_processed')}, "
+        f"qfq: 成功{qfq_stats.get('done')}/{qfq_stats.get('total')})"
+    )
+    return {"historical": historical_stats, "qfq": qfq_stats}

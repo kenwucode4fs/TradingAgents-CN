@@ -45,7 +45,8 @@ from app.worker.tushare_sync_service import (
     run_tushare_quotes_sync,
     run_tushare_historical_sync,
     run_tushare_financial_sync,
-    run_tushare_status_check
+    run_tushare_status_check,
+    run_full_a_share_sync
 )
 from app.worker.akshare_sync_service import (
     run_akshare_basic_info_sync,
@@ -374,6 +375,26 @@ async def lifespan(app: FastAPI):
             logger.info(f"⏸️ Tushare历史数据同步已添加但暂停: {settings.TUSHARE_HISTORICAL_SYNC_CRON}")
         else:
             logger.info(f"📊 Tushare历史数据同步已配置: {settings.TUSHARE_HISTORICAL_SYNC_CRON}")
+
+        # 全量A股历史数据同步任务（原始日线 + 前复权价，收盘后每日增量，供回测引擎使用）
+        # 默认关闭（TUSHARE_FULL_A_SHARE_SYNC_ENABLED=False）：
+        # 首次全量 backfill（incremental=False）耗时 1-2 小时，需要手动触发一次，
+        # 不适合放进日常调度；这里注册的是 incremental=True 的每日增量任务。
+        scheduler.add_job(
+            run_full_a_share_sync,
+            CronTrigger.from_crontab(settings.TUSHARE_FULL_A_SHARE_SYNC_CRON, timezone=settings.TIMEZONE),
+            id="tushare_full_a_share_sync",
+            name="全量A股历史数据同步（原始日线+前复权价，Tushare）",
+            kwargs={
+                "incremental": True,
+                "qfq_rate_limit_per_min": settings.TUSHARE_FULL_A_SHARE_SYNC_QFQ_RATE_LIMIT_PER_MIN
+            }
+        )
+        if not settings.TUSHARE_FULL_A_SHARE_SYNC_ENABLED:
+            scheduler.pause_job("tushare_full_a_share_sync")
+            logger.info(f"⏸️ 全量A股历史数据同步已添加但暂停: {settings.TUSHARE_FULL_A_SHARE_SYNC_CRON}")
+        else:
+            logger.info(f"📊 全量A股历史数据同步已配置: {settings.TUSHARE_FULL_A_SHARE_SYNC_CRON}")
 
         # 财务数据同步任务
         scheduler.add_job(

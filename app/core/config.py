@@ -201,6 +201,19 @@ class Settings(BaseSettings):
     TUSHARE_STATUS_CHECK_ENABLED: bool = Field(default=True)
     TUSHARE_STATUS_CHECK_CRON: str = Field(default="0 * * * *")  # 每小时
 
+    # 全量A股历史数据同步（原始日线 + 前复权价，供回测引擎使用）
+    # 默认关闭：全市场前复权价重算耗时较长（2000积分档约40-60分钟），
+    # 需要评估好时段再手动开启（设置为 true 或调用 API 手动触发）
+    TUSHARE_FULL_A_SHARE_SYNC_ENABLED: bool = Field(
+        default=False, description="启用每日全量A股历史数据同步（原始日线+前复权价）"
+    )
+    TUSHARE_FULL_A_SHARE_SYNC_CRON: str = Field(
+        default="0 18 * * 1-5", description="全量A股历史数据同步CRON表达式"
+    )  # 工作日18点（收盘后）
+    TUSHARE_FULL_A_SHARE_SYNC_QFQ_RATE_LIMIT_PER_MIN: int = Field(
+        default=120, ge=1, le=2000, description="前复权价同步每分钟最大调用次数（2000积分档保守默认120）"
+    )
+
     # Tushare数据初始化配置
     TUSHARE_INIT_HISTORICAL_DAYS: int = Field(default=365, ge=1, le=3650, description="初始化历史数据天数")
     TUSHARE_INIT_BATCH_SIZE: int = Field(default=100, ge=10, le=1000, description="初始化批处理大小")
