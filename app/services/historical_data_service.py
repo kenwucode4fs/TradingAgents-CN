@@ -125,6 +125,12 @@ class HistoricalDataService:
 
             convert_duration = (datetime.now() - convert_start).total_seconds()
 
+            # 🔥 复权价保护：下面用 ReplaceOne 整份替换文档，如果不预先取出
+            # 已落库的复权价，常规行情同步（本次 data 里通常不带复权价）会把
+            # merge_qfq_prices 之前写入的 open_qfq/high_qfq/low_qfq/close_qfq
+            # 覆盖成 None。这里预取该 symbol 已有的复权价，按 trade_date 合并回去。
+            existing_qfq_map = await self._get_existing_qfq_map(symbol, data_source, period)
+
             # ⏱️ 性能监控：构建操作列表
             prepare_start = datetime.now()
             # 准备批量操作
@@ -136,6 +142,12 @@ class HistoricalDataService:
                 try:
                     # 标准化数据（传递日期索引）
                     doc = self._standardize_record(symbol, row, data_source, market, period, date_index)
+
+                    # 本次同步的行没有带复权价时，沿用已落库的复权价，避免被整份替换冲掉
+                    if not any(doc.get(f) is not None for f in ("open_qfq", "high_qfq", "low_qfq", "close_qfq")):
+                        existing_qfq = existing_qfq_map.get(doc["trade_date"])
+                        if existing_qfq:
+                            doc.update(existing_qfq)
 
                     # 创建upsert操作
                     filter_doc = {
@@ -244,6 +256,57 @@ class HistoricalDataService:
                     return 0
 
         return saved_count
+
+    async def _get_existing_qfq_map(
+        self,
+        symbol: str,
+        data_source: str,
+        period: str
+    ) -> Dict[str, Dict[str, float]]:
+        """
+        查询该 symbol 已落库的前复权价字段，按 trade_date 建立索引
+
+        用于 save_historical_data 在整份替换（ReplaceOne）文档前做保护性合并：
+        常规行情同步本身不带复权价，如果不先读出旧值合并回去，会把
+        merge_qfq_prices 之前写入的 open_qfq/high_qfq/low_qfq/close_qfq 冲成 None。
+
+        Args:
+            symbol: 股票代码
+            data_source: 数据源（需与目标文档一致，如 tushare）
+            period: 周期（需与目标文档一致，如 daily）
+
+        Returns:
+            {trade_date: {"open_qfq":..., "high_qfq":..., "low_qfq":..., "close_qfq":...}}
+            只包含至少有一个复权字段真实存在且非空的记录；查询失败时返回空字典
+            （不阻塞正常的行情同步流程）。
+        """
+        qfq_fields = ("open_qfq", "high_qfq", "low_qfq", "close_qfq")
+        try:
+            projection = {"trade_date": 1, "_id": 0}
+            projection.update({f: 1 for f in qfq_fields})
+
+            cursor = self.collection.find(
+                {
+                    "symbol": symbol,
+                    "data_source": data_source,
+                    "period": period,
+                    # 用 $exists + $ne 精确匹配"字段存在且不为空"，避免 $ne: null
+                    # 把历史上从未写过该字段的旧文档也误匹配进来
+                    "$or": [{f: {"$exists": True, "$ne": None}} for f in qfq_fields],
+                },
+                projection
+            )
+
+            result: Dict[str, Dict[str, float]] = {}
+            async for row in cursor:
+                trade_date = row.pop("trade_date", None)
+                if trade_date and row:
+                    result[trade_date] = row
+            return result
+
+        except Exception as e:
+            logger.warning(f"⚠️ 查询 {symbol} 已有复权价失败，跳过复权价保护合并: {e}")
+            return {}
 
     def _standardize_record(
         self,
