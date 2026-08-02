@@ -36,12 +36,15 @@ class Broker(object):
         """单档目标金额 = 初始资金 / 分仓数。"""
         return self.initial_capital / self.position.parts
 
+    def _budget(self) -> float:
+        """本档实际可用预算 = min(单档目标金额, 当前现金)。"""
+        return min(self._part_amount(), self.cash)
+
     def buyable_shares_for_part(self, price: float) -> int:
         """按单档资金、给定价格计算可买股数（按 100 股取整，不含成本）。"""
-        budget = min(self._part_amount(), self.cash)
         if price <= 0:
             return 0
-        lots = math.floor(budget / price / 100)
+        lots = math.floor(self._budget() / price / 100)
         return lots * 100
 
     def try_buy_one_part(self, bar: Bar) -> bool:
@@ -56,9 +59,8 @@ class Broker(object):
         if not mr.can_buy_at_open(bar.open, bar.pre_close, self.symbol, bar.is_st):
             return False
 
-        budget = min(self._part_amount(), self.cash)
-        lots = math.floor(budget / bar.open / 100)
-        shares = lots * 100
+        budget = self._budget()
+        shares = self.buyable_shares_for_part(bar.open)
         if shares <= 0:
             return False
 
@@ -75,8 +77,9 @@ class Broker(object):
             total = amount + comm + transfer
             if total > budget:
                 return False
-        if total > self.cash:
-            return False
+        # 不变量：budget = min(单档金额, cash) <= cash，
+        # 经上面对 budget 的校验后 total 必然 <= cash；此处仅作防御性断言。
+        assert total <= self.cash, "买入总花费不应超过可用现金（不变量被打破）"
 
         self.cash = round(self.cash - total, 2)
         self.shares += shares

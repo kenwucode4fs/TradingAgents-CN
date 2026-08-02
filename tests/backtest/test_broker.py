@@ -45,3 +45,29 @@ def test_sell_clear_all():
     b.try_buy_one_part(_bar(o=10.0, pre=10.0))
     b.try_sell(_bar(o=12.0, pre=11.0))
     assert b.shares == 0 and b.held_parts == 0
+
+
+def test_cannot_sell_on_limit_down():
+    b = Broker(100000, CostConfig(), PositionConfig(parts=2), "600000")
+    b.try_buy_one_part(_bar(o=10.0, pre=10.0))
+    shares_before, cash_before, parts_before = b.shares, b.cash, b.held_parts
+    # 主板跌停价 = 10 * 0.9 = 9.0，open 恰好等于跌停价（一字跌停，不可卖）
+    sold = b.try_sell(_bar(o=9.0, pre=10.0))
+    assert sold is False
+    assert b.shares == shares_before
+    assert b.cash == cash_before
+    assert b.held_parts == parts_before
+
+
+def test_market_value_after_buy():
+    b = Broker(100000, CostConfig(), PositionConfig(parts=2), "600000")
+    b.try_buy_one_part(_bar(o=10.0, pre=10.0))
+    assert b.market_value(12.0) == round(b.cash + b.shares * 12.0, 2)
+
+
+def test_buyable_shares_for_part():
+    b = Broker(100000, CostConfig(), PositionConfig(parts=2), "600000")
+    # 单档预算 = min(50000, 100000) = 50000，10元 → floor(50000/10/100)*100 = 5000（不含成本）
+    assert b.buyable_shares_for_part(10.0) == 5000
+    # 非正价格直接返回 0
+    assert b.buyable_shares_for_part(0) == 0
