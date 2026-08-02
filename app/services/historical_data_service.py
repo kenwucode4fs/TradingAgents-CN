@@ -10,7 +10,7 @@ from typing import Dict, Any, List, Optional, Union
 import pandas as pd
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.core.database import get_database
+from app.core.database import get_database, db_manager
 
 logger = logging.getLogger(__name__)
 
@@ -640,9 +640,25 @@ _historical_data_service = None
 
 
 async def get_historical_data_service() -> HistoricalDataService:
-    """获取历史数据服务实例"""
+    """获取历史数据服务实例
+
+    进程内是单例复用，但需要防御一种场景：MongoDB 连接被重建过
+    （即 db_manager.mongo_client 被替换成了新的 AsyncIOMotorClient，
+    例如重连、或测试里反复 init_mongodb()/close_connections()）。
+    此时上一次缓存的实例里 self.collection 仍然绑定着旧 client——而旧
+    client 很可能已经绑定到一个已经关闭的事件循环上，继续用它发请求会
+    抛 `RuntimeError: Event loop is closed`。这里通过比较缓存实例底层
+    的 client 和 db_manager 当前持有的 client 是否是同一个对象，判断
+    缓存是否已经失效，失效则重新创建并初始化，避免复用失效连接。
+    """
     global _historical_data_service
-    if _historical_data_service is None:
+
+    stale = (
+        _historical_data_service is not None
+        and _historical_data_service.db is not None
+        and _historical_data_service.db.client is not db_manager.mongo_client
+    )
+    if _historical_data_service is None or stale:
         _historical_data_service = HistoricalDataService()
         await _historical_data_service.initialize()
     return _historical_data_service
