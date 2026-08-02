@@ -126,3 +126,79 @@ def test_single_point_curve_no_crash():
     assert m["annual_return"] == 0.0
     assert m["sharpe"] == 0.0
     assert m["max_drawdown"] == 0.0
+
+
+# ==================== Important：Trade.pnl 回填 ====================
+
+def test_trade_pnl_backfilled_buy_none_sell_matches_manual_pairing():
+    """买入笔 pnl 应为 None；卖出笔 pnl 应等于逐股配对手算出的合计盈亏
+    （一买对多卖场景，验证按股数 FIFO 配对回填的是"该笔 sell 消耗的各买入段之和"）。
+    """
+    trades = [
+        Trade(date="d1", side="buy", price=10.0, shares=300, commission=3.0, stamp_tax=0.0, transfer_fee=0.3),
+        Trade(date="d2", side="sell", price=11.0, shares=150, commission=1.5, stamp_tax=1.65, transfer_fee=0.15),
+        Trade(date="d3", side="sell", price=9.0, shares=150, commission=1.5, stamp_tax=1.35, transfer_fee=0.15),
+    ]
+    curve = [("d1", 100000), ("d2", 100000)]
+    compute_metrics(curve, 100000, _bars([10, 10]), trades=trades)
+
+    per_share_buy_cost = (3.0 + 0.3) / 300
+    per_share_sell1_cost = (1.5 + 1.65 + 0.15) / 150
+    per_share_sell2_cost = (1.5 + 1.35 + 0.15) / 150
+    expected_pnl1 = (11.0 - 10.0) * 150 - per_share_buy_cost * 150 - per_share_sell1_cost * 150
+    expected_pnl2 = (9.0 - 10.0) * 150 - per_share_buy_cost * 150 - per_share_sell2_cost * 150
+
+    assert trades[0].pnl is None  # 买入笔不回填
+    assert round(trades[1].pnl, 6) == round(expected_pnl1, 6)
+    assert round(trades[2].pnl, 6) == round(expected_pnl2, 6)
+
+
+def test_trade_pnl_backfilled_one_sell_covers_multiple_buys():
+    """多买对一卖：一笔 sell 同时平掉多笔 buy 时，pnl 应回填为它消耗的各买入段之和。"""
+    trades = [
+        Trade(date="d1", side="buy", price=10.0, shares=100, commission=1.0, stamp_tax=0.0, transfer_fee=0.1),
+        Trade(date="d2", side="buy", price=12.0, shares=200, commission=2.0, stamp_tax=0.0, transfer_fee=0.2),
+        Trade(date="d3", side="sell", price=11.0, shares=300, commission=3.0, stamp_tax=3.3, transfer_fee=0.3),
+    ]
+    curve = [("d1", 100000), ("d2", 100000)]
+    compute_metrics(curve, 100000, _bars([10, 10]), trades=trades)
+
+    per_share_buy1_cost = (1.0 + 0.1) / 100
+    per_share_buy2_cost = (2.0 + 0.2) / 200
+    per_share_sell_cost = (3.0 + 3.3 + 0.3) / 300
+    pnl1 = (11.0 - 10.0) * 100 - per_share_buy1_cost * 100 - per_share_sell_cost * 100
+    pnl2 = (11.0 - 12.0) * 200 - per_share_buy2_cost * 200 - per_share_sell_cost * 200
+    expected_sell_pnl = pnl1 + pnl2
+
+    assert trades[0].pnl is None
+    assert trades[1].pnl is None
+    assert round(trades[2].pnl, 6) == round(expected_sell_pnl, 6)
+
+
+# ==================== Minor：平均持仓天数 ====================
+
+def test_avg_holding_days_weighted_by_shares():
+    """按股数加权的平均持仓天数：交易日间隔用 bars 的日期序号差（而非日历天数）。
+
+    bars 为 d1..d5 共 5 个交易日（序号 0..4）。
+    第一段：d1 买 100 股，d3 卖 100 股 → 持仓 2 个交易日。
+    第二段：d2 买 200 股，d5 卖 200 股 → 持仓 3 个交易日。
+    按股数加权：(2*100 + 3*200) / (100+200) = 800/300。
+    """
+    bars = _bars([10, 10, 10, 10, 10])  # d1..d5
+    trades = [
+        Trade(date="2020-04-01", side="buy", price=10.0, shares=100, commission=1.0, stamp_tax=0.0, transfer_fee=0.1),
+        Trade(date="2020-04-02", side="buy", price=10.0, shares=200, commission=2.0, stamp_tax=0.0, transfer_fee=0.2),
+        Trade(date="2020-04-03", side="sell", price=10.0, shares=100, commission=1.0, stamp_tax=1.0, transfer_fee=0.1),
+        Trade(date="2020-04-05", side="sell", price=10.0, shares=200, commission=2.0, stamp_tax=2.0, transfer_fee=0.2),
+    ]
+    curve = [("2020-04-01", 100000), ("2020-04-05", 100000)]
+    m = compute_metrics(curve, 100000, bars, trades=trades)
+
+    expected = (2 * 100 + 3 * 200) / 300
+    assert round(m["avg_holding_days"], 6) == round(expected, 6)
+
+
+def test_avg_holding_days_zero_when_no_closed_trades():
+    m = compute_metrics([("d1", 100000)], 100000, _bars([10]), trades=[])
+    assert m["avg_holding_days"] == 0.0

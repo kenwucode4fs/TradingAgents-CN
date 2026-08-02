@@ -1,7 +1,7 @@
 """回测引擎核心数据类型。"""
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Literal
+from typing import Literal, Optional
 
 
 class Action(Enum):
@@ -51,6 +51,8 @@ class Trade:
     """印花税"""
     transfer_fee: float
     """过户费"""
+    pnl: Optional[float] = None
+    """本笔盈亏：买入笔恒为 None；卖出笔为该笔配对出的总盈亏（各买入段盈亏之和）"""
 
 
 @dataclass

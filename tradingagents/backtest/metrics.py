@@ -15,7 +15,8 @@ def compute_metrics(equity_curve: List[Tuple[str, float]], initial_capital: floa
 
     Returns:
         dict，包含 total_return、annual_return、max_drawdown、sharpe、
-        win_rate、profit_loss_ratio、trade_count、benchmark_return、benchmark_curve
+        win_rate、profit_loss_ratio、trade_count、avg_holding_days、
+        benchmark_return、benchmark_curve
     """
     equities = [e for _, e in equity_curve]
     n = len(equities)
@@ -55,8 +56,13 @@ def compute_metrics(equity_curve: List[Tuple[str, float]], initial_capital: floa
     # 卖出最后一档、clear_all 会把多档合并成 1 笔 sell——因此一笔 buy
     # 可能被多笔 sell 分批平仓，一笔 sell 也可能同时平掉多笔 buy，
     # 买卖的笔数和股数并不对称，必须按股数配对，而非整笔配对。
-    # 队列维护 [买入价, 剩余未平仓股数, 该买入笔每股应分摊的买方成本]。
+    # 队列维护 [买入价, 剩余未平仓股数, 该买入笔每股应分摊的买方成本, 买入日期]。
+    # 平均持仓天数（spec §8）：按每段配对（而非整笔）的持仓天数、以配对股数加权
+    # 平均——一段配对的持仓天数 = 卖出日与对应买入日之间的交易日间隔（用 bars
+    # 的日期序号差，而非日历天数差，跳过非交易日）。
+    date_to_idx = {b.date: i for i, b in enumerate(bars)}
     wins, losses, pnl_pos, pnl_neg = 0, 0, 0.0, 0.0
+    holding_days_weighted, holding_shares = 0.0, 0
     buy_queue = []
     for t in trades:
         if t.shares <= 0:
@@ -66,18 +72,21 @@ def compute_metrics(equity_curve: List[Tuple[str, float]], initial_capital: floa
             # 注：A股买入印花税恒为 0（mr.buy_cost 返回值如此），
             # 因此这里刻意不计入 t.stamp_tax，避免日后误以为遗漏。
             per_share_cost = (t.commission + t.transfer_fee) / t.shares
-            buy_queue.append([t.price, t.shares, per_share_cost])
+            buy_queue.append([t.price, t.shares, per_share_cost, t.date])
         elif t.side == "sell":
             remaining = t.shares
             # 卖方每股成本 = (手续费 + 印花税 + 过户费) / 股数，
             # 按实际配对到的股数比例分摊到每一段配对。
             per_share_sell_cost = (t.commission + t.stamp_tax + t.transfer_fee) / t.shares
+            sell_total_pnl = 0.0  # 本笔 sell 消耗的各买入段盈亏之和，回填到 t.pnl
+            sell_idx = date_to_idx.get(t.date)
             while remaining > 0 and buy_queue:
-                buy_price, buy_remaining, buy_per_share_cost = buy_queue[0]
+                buy_price, buy_remaining, buy_per_share_cost, buy_date = buy_queue[0]
                 matched = min(remaining, buy_remaining)
                 pnl = ((t.price - buy_price) * matched
                        - buy_per_share_cost * matched
                        - per_share_sell_cost * matched)
+                sell_total_pnl += pnl
                 # 打平（pnl == 0）按约定计为 win，而非单独归类。
                 if pnl >= 0:
                     wins += 1
@@ -85,6 +94,10 @@ def compute_metrics(equity_curve: List[Tuple[str, float]], initial_capital: floa
                 else:
                     losses += 1
                     pnl_neg += -pnl
+                buy_idx = date_to_idx.get(buy_date)
+                if buy_idx is not None and sell_idx is not None:
+                    holding_days_weighted += (sell_idx - buy_idx) * matched
+                    holding_shares += matched
                 buy_remaining -= matched
                 remaining -= matched
                 if buy_remaining <= 0:
@@ -93,10 +106,13 @@ def compute_metrics(equity_curve: List[Tuple[str, float]], initial_capital: floa
                     buy_queue[0][1] = buy_remaining
             # remaining > 0 但队列已空：无对应买入可配对（数据异常），
             # 不计入 win/loss，也不抛异常。
+            # trades 是 broker.trades 的引用，回填会同步反映到调用方持有的结果里。
+            t.pnl = sell_total_pnl
     closed = wins + losses
     win_rate = wins / closed if closed else 0.0
     profit_loss_ratio = ((pnl_pos / wins) / (pnl_neg / losses)
                           if wins and losses else 0.0)
+    avg_holding_days = holding_days_weighted / holding_shares if holding_shares else 0.0
 
     return {
         "total_return": total_return,
@@ -106,6 +122,7 @@ def compute_metrics(equity_curve: List[Tuple[str, float]], initial_capital: floa
         "win_rate": win_rate,
         "profit_loss_ratio": profit_loss_ratio,
         "trade_count": len(trades),
+        "avg_holding_days": avg_holding_days,
         "benchmark_return": benchmark_return,
         "benchmark_curve": benchmark_curve,
     }
