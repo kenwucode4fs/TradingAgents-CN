@@ -65,18 +65,29 @@ def test_sync_qfq_writes_fields():
     需要：mongodb 容器（tradingagents-mongodb）在运行，且已有 000001 的
     tushare 日线历史数据（否则 merge 时无匹配文档，saved 恒为 0）。
     tushare token 需已配置（.env 中的 TUSHARE_TOKEN）。
+
+    注意：这里没有直接调用 app.core.database.init_database()，因为它会
+    同时初始化 Redis（本地容器需要额外的 Redis 鉴权，与本测试无关），
+    改为只做 sync_historical_qfq 真正依赖的 MongoDB 初始化，避免引入
+    无关依赖。
     """
-    from app.core.database import init_database, close_database
+    from app.core import database as db_module
     from app.worker.tushare_sync_service import TushareSyncService
 
     async def _run():
-        await init_database()
+        await db_module.db_manager.init_mongodb()
+        # get_mongo_db() / get_database() 读取的是模块级全局变量，
+        # 需要和 db_manager 上的连接保持同步
+        db_module.mongo_client = db_module.db_manager.mongo_client
+        db_module.mongo_db = db_module.db_manager.mongo_db
         try:
             svc = TushareSyncService()
             await svc.initialize()
             return await svc.sync_historical_qfq("000001", "20260101", "20260731")
         finally:
-            await close_database()
+            await db_module.db_manager.close_connections()
+            db_module.mongo_client = None
+            db_module.mongo_db = None
 
     r = asyncio.run(_run())
     assert r["saved"] > 0

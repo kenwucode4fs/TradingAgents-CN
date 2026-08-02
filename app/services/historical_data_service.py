@@ -380,6 +380,75 @@ class HistoricalDataService:
         except (ValueError, TypeError):
             return None
     
+    async def merge_qfq_prices(
+        self,
+        symbol: str,
+        records: List[Dict[str, Any]],
+        data_source: str = "tushare",
+        period: str = "daily"
+    ) -> int:
+        """
+        将前复权价（qfq）字段合并写入已存在的历史行情文档
+
+        与 save_historical_data 不同，这里只对"已存在"的文档做 $set 更新
+        （UpdateOne + upsert=False），不会新建文档，避免复权价同步和普通行情
+        同步互相覆盖对方写入的字段。
+
+        Args:
+            symbol: 股票代码
+            records: 复权数据列表，每条至少包含 trade_date（YYYYMMDD 或 YYYY-MM-DD）
+                     以及 open_qfq/high_qfq/low_qfq/close_qfq 中的部分或全部字段
+            data_source: 用于匹配已有文档的数据源，默认 tushare（复权价目前只从 tushare 获取）
+            period: 用于匹配已有文档的周期，默认 daily
+
+        Returns:
+            实际更新成功的记录数
+        """
+        if self.collection is None:
+            await self.initialize()
+
+        if not records:
+            return 0
+
+        try:
+            from pymongo import UpdateOne
+
+            operations = []
+            for rec in records:
+                trade_date = self._format_date(rec.get("trade_date"))
+
+                set_fields = {}
+                for field in ("open_qfq", "high_qfq", "low_qfq", "close_qfq"):
+                    value = self._safe_float(rec.get(field))
+                    if value is not None:
+                        set_fields[field] = value
+
+                # 复权字段全部为空，没有可更新的内容，跳过
+                if not set_fields:
+                    continue
+
+                set_fields["updated_at"] = datetime.utcnow()
+
+                filter_doc = {
+                    "symbol": symbol,
+                    "trade_date": trade_date,
+                    "data_source": data_source,
+                    "period": period,
+                }
+                operations.append(UpdateOne(filter_doc, {"$set": set_fields}, upsert=False))
+
+            if not operations:
+                logger.warning(f"⚠️ {symbol} 复权价记录中没有可更新的字段，跳过合并")
+                return 0
+
+            saved_count = await self._execute_bulk_write_with_retry(symbol, operations)
+            logger.info(f"✅ {symbol} 前复权价合并完成: {saved_count}/{len(operations)} 条记录已更新")
+            return saved_count
+
+        except Exception as e:
+            logger.error(f"❌ 合并前复权价失败 {symbol}: {e}")
+            return 0
+
     async def get_historical_data(
         self,
         symbol: str,
