@@ -1,8 +1,10 @@
 """从历史库加载前复权日线为 Bar 序列。"""
 import asyncio
-from typing import List, Optional
+from typing import List
 
 from .types import Bar
+
+_QFQ_FIELDS = ("open_qfq", "high_qfq", "low_qfq", "close_qfq")
 
 
 def _to_dash_date(d: str) -> str:
@@ -26,6 +28,11 @@ def bars_from_records(records: list, symbol: str, st_service=None) -> List[Bar]:
     bars: List[Bar] = []
     for r in rows:
         date = _to_dash_date(r["trade_date"])
+        missing = [f for f in _QFQ_FIELDS if r.get(f) is None]
+        if missing:
+            raise ValueError(
+                f"{symbol} {date} 缺前复权价字段 {missing}，请先跑复权同步（Task 1）"
+            )
         vol = r.get("volume") or 0
         is_st = bool(st_service.is_st(symbol, date)) if st_service else False
         bars.append(Bar(
@@ -68,8 +75,8 @@ def load_bars(symbol: str, start_date: str, end_date: str, st_service=None) -> L
     records = asyncio.run(_run())
     if not records:
         raise ValueError(f"无历史数据：{symbol} {start_date}~{end_date}，请先同步")
-    if records[0].get("close_qfq") is None:
-        raise ValueError(f"{symbol} 缺前复权价，请先跑复权同步（Task 1）")
+    # 逐行复权价校验交给 bars_from_records（增量同步可能导致中间日期缺复权价，
+    # 不能只查首条记录）。
     if st_service:
         asyncio.run(st_service.load(symbol))
     return bars_from_records(records, symbol, st_service)
