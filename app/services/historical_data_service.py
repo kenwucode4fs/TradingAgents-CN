@@ -324,7 +324,17 @@ class HistoricalDataService:
         for key, value in optional_fields.items():
             if value is not None:
                 doc[key] = self._safe_float(value)
-        
+
+        # 🔥 前复权价字段透传（回测引擎读取，避免除权除息造成的价格跳变）
+        # 若 row 中没有这些字段（普通行情同步场景），则写为 None；
+        # 由 merge_qfq_prices 在专门的复权价同步中通过 $set 补齐真实值
+        doc.update({
+            "open_qfq": self._safe_float(row.get('open_qfq')),
+            "high_qfq": self._safe_float(row.get('high_qfq')),
+            "low_qfq": self._safe_float(row.get('low_qfq')),
+            "close_qfq": self._safe_float(row.get('close_qfq')),
+        })
+
         return doc
     
     def _get_full_symbol(self, symbol: str, market: str) -> str:
