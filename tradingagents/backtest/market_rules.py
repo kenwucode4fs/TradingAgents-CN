@@ -1,4 +1,5 @@
 """A股交易规则纯函数：板块、涨跌停、成交可行性、交易成本。"""
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal
 from .types import CostConfig
 
@@ -12,17 +13,17 @@ def board_of(symbol: str) -> Literal["main", "gem", "star", "bse"]:
 
     Returns:
         板块代码：
-        - "main": 主板（沪深京 A 股）
+        - "main": 主板（沪深京 A 股、B 股）
         - "gem": 创业板（300/301 开头）
         - "star": 科创板（688 开头）
-        - "bse": 北交所（8/9/43/83/87/92 开头）
+        - "bse": 北交所（8 开头、920 开头、43/83/87 开头）
     """
     s = symbol.zfill(6)
     if s.startswith("688"):
         return "star"
     if s.startswith("300") or s.startswith("301"):
         return "gem"
-    if s.startswith(("8", "9", "43", "83", "87", "92")):
+    if s.startswith("8") or s.startswith("920") or s.startswith(("43", "83", "87")):
         return "bse"
     return "main"
 
@@ -55,6 +56,9 @@ def limit_up_price(pre_close: float, symbol: str, is_st: bool) -> float:
     """
     计算涨停价。
 
+    使用 Decimal 精确计算，避免浮点二进制误差。例如：0.95*1.1=1.045 应四舍五入为 1.05，
+    但 round(0.95*1.1, 2) 会因浮点误差算出 1.04。
+
     Args:
         pre_close: 前收盘价
         symbol: 股票代码
@@ -63,12 +67,16 @@ def limit_up_price(pre_close: float, symbol: str, is_st: bool) -> float:
     Returns:
         涨停价（保留 2 位小数）
     """
-    return round(pre_close * (1 + price_limit_pct(symbol, is_st)), 2)
+    pct = price_limit_pct(symbol, is_st)
+    raw = Decimal(str(pre_close)) * (Decimal("1") + Decimal(str(pct)))
+    return float(raw.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
 def limit_down_price(pre_close: float, symbol: str, is_st: bool) -> float:
     """
     计算跌停价。
+
+    使用 Decimal 精确计算，避免浮点二进制误差。
 
     Args:
         pre_close: 前收盘价
@@ -78,7 +86,9 @@ def limit_down_price(pre_close: float, symbol: str, is_st: bool) -> float:
     Returns:
         跌停价（保留 2 位小数）
     """
-    return round(pre_close * (1 - price_limit_pct(symbol, is_st)), 2)
+    pct = price_limit_pct(symbol, is_st)
+    raw = Decimal(str(pre_close)) * (Decimal("1") - Decimal(str(pct)))
+    return float(raw.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
 def can_buy_at_open(open_price: float, pre_close: float, symbol: str, is_st: bool) -> bool:
