@@ -61,6 +61,56 @@ def test_win_rate_and_profit_loss_ratio():
     assert m["trade_count"] == 4
 
 
+def test_win_loss_one_buy_many_sells():
+    """一笔买入分两笔卖出各卖一半（一买对多卖），须按股数 FIFO 逐股配对。"""
+    trades = [
+        Trade(date="d1", side="buy", price=10.0, shares=300, commission=3.0, stamp_tax=0.0, transfer_fee=0.3),
+        Trade(date="d2", side="sell", price=11.0, shares=150, commission=1.5, stamp_tax=1.65, transfer_fee=0.15),
+        Trade(date="d3", side="sell", price=9.0, shares=150, commission=1.5, stamp_tax=1.35, transfer_fee=0.15),
+    ]
+    curve = [("d1", 100000), ("d2", 100000)]
+    m = compute_metrics(curve, 100000, _bars([10, 10]), trades=trades)
+
+    per_share_buy_cost = (3.0 + 0.3) / 300  # 0.011
+    per_share_sell1_cost = (1.5 + 1.65 + 0.15) / 150  # 0.022
+    per_share_sell2_cost = (1.5 + 1.35 + 0.15) / 150  # 0.02
+
+    pnl1 = (11.0 - 10.0) * 150 - per_share_buy_cost * 150 - per_share_sell1_cost * 150  # 盈利
+    pnl2 = (9.0 - 10.0) * 150 - per_share_buy_cost * 150 - per_share_sell2_cost * 150  # 亏损
+
+    assert pnl1 > 0 and pnl2 < 0
+    assert m["trade_count"] == 3
+    assert round(m["win_rate"], 4) == 0.5  # 两段配对：1胜1负
+    expected_ratio = pnl1 / abs(pnl2)
+    assert round(m["profit_loss_ratio"], 4) == round(expected_ratio, 4)
+
+
+def test_win_loss_many_buys_one_sell():
+    """多笔小额买入后一次性全卖（多买对一卖），须按股数 FIFO 逐股配对。"""
+    trades = [
+        Trade(date="d1", side="buy", price=10.0, shares=100, commission=1.0, stamp_tax=0.0, transfer_fee=0.1),
+        Trade(date="d2", side="buy", price=12.0, shares=200, commission=2.0, stamp_tax=0.0, transfer_fee=0.2),
+        Trade(date="d3", side="sell", price=11.0, shares=300, commission=3.0, stamp_tax=3.3, transfer_fee=0.3),
+    ]
+    curve = [("d1", 100000), ("d2", 100000)]
+    m = compute_metrics(curve, 100000, _bars([10, 10]), trades=trades)
+
+    per_share_buy1_cost = (1.0 + 0.1) / 100  # 0.011
+    per_share_buy2_cost = (2.0 + 0.2) / 200  # 0.011
+    per_share_sell_cost = (3.0 + 3.3 + 0.3) / 300  # 0.022
+
+    # 第一段：卖出配对第一笔买入的 100 股
+    pnl1 = (11.0 - 10.0) * 100 - per_share_buy1_cost * 100 - per_share_sell_cost * 100  # 盈利
+    # 第二段：卖出配对第二笔买入的 200 股
+    pnl2 = (11.0 - 12.0) * 200 - per_share_buy2_cost * 200 - per_share_sell_cost * 200  # 亏损
+
+    assert pnl1 > 0 and pnl2 < 0
+    assert m["trade_count"] == 3
+    assert round(m["win_rate"], 4) == 0.5  # 两段配对：1胜1负
+    expected_ratio = pnl1 / abs(pnl2)
+    assert round(m["profit_loss_ratio"], 4) == round(expected_ratio, 4)
+
+
 def test_no_trades_no_crash():
     curve = [("d1", 100000), ("d2", 105000)]
     m = compute_metrics(curve, 100000, _bars([10, 10.5]), trades=[])

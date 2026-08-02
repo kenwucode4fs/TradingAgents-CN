@@ -50,23 +50,49 @@ def compute_metrics(equity_curve: List[Tuple[str, float]], initial_capital: floa
                          for i in range(len(bars))]
                         if closes else [])
 
-    # 每笔盈亏（买-卖配对，FIFO：先入先出，一买对一卖）
+    # 每笔盈亏：按股数 FIFO 逐股配对（不能整笔配对）。
+    # 本回测采用固定份数分批建仓/减仓（broker.py），reduce_one 按 LIFO
+    # 卖出最后一档、clear_all 会把多档合并成 1 笔 sell——因此一笔 buy
+    # 可能被多笔 sell 分批平仓，一笔 sell 也可能同时平掉多笔 buy，
+    # 买卖的笔数和股数并不对称，必须按股数配对，而非整笔配对。
+    # 队列维护 [买入价, 剩余未平仓股数, 该买入笔每股应分摊的买方成本]。
     wins, losses, pnl_pos, pnl_neg = 0, 0, 0.0, 0.0
-    buy_stack = []
+    buy_queue = []
     for t in trades:
+        if t.shares <= 0:
+            continue
         if t.side == "buy":
-            buy_stack.append(t)
-        elif t.side == "sell" and buy_stack:
-            b = buy_stack.pop(0)
-            pnl = ((t.price - b.price) * t.shares
-                   - t.commission - t.stamp_tax - t.transfer_fee
-                   - b.commission - b.transfer_fee)
-            if pnl >= 0:
-                wins += 1
-                pnl_pos += pnl
-            else:
-                losses += 1
-                pnl_neg += -pnl
+            # 买方每股成本 = (手续费 + 过户费) / 股数。
+            # 注：A股买入印花税恒为 0（mr.buy_cost 返回值如此），
+            # 因此这里刻意不计入 t.stamp_tax，避免日后误以为遗漏。
+            per_share_cost = (t.commission + t.transfer_fee) / t.shares
+            buy_queue.append([t.price, t.shares, per_share_cost])
+        elif t.side == "sell":
+            remaining = t.shares
+            # 卖方每股成本 = (手续费 + 印花税 + 过户费) / 股数，
+            # 按实际配对到的股数比例分摊到每一段配对。
+            per_share_sell_cost = (t.commission + t.stamp_tax + t.transfer_fee) / t.shares
+            while remaining > 0 and buy_queue:
+                buy_price, buy_remaining, buy_per_share_cost = buy_queue[0]
+                matched = min(remaining, buy_remaining)
+                pnl = ((t.price - buy_price) * matched
+                       - buy_per_share_cost * matched
+                       - per_share_sell_cost * matched)
+                # 打平（pnl == 0）按约定计为 win，而非单独归类。
+                if pnl >= 0:
+                    wins += 1
+                    pnl_pos += pnl
+                else:
+                    losses += 1
+                    pnl_neg += -pnl
+                buy_remaining -= matched
+                remaining -= matched
+                if buy_remaining <= 0:
+                    buy_queue.pop(0)
+                else:
+                    buy_queue[0][1] = buy_remaining
+            # remaining > 0 但队列已空：无对应买入可配对（数据异常），
+            # 不计入 win/loss，也不抛异常。
     closed = wins + losses
     win_rate = wins / closed if closed else 0.0
     profit_loss_ratio = ((pnl_pos / wins) / (pnl_neg / losses)
