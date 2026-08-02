@@ -833,6 +833,70 @@ class TushareSyncService:
             # 出错时返回30天前，确保不漏数据
             return (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
 
+    # ==================== 前复权价同步（回测引擎） ====================
+
+    async def sync_historical_qfq(self, symbol: str, start_date: str, end_date: str) -> Dict[str, Any]:
+        """
+        同步单只股票的前复权（qfq）日线价格，补齐到 stock_daily_quotes 的复权字段
+
+        使用 TushareAdapter.get_kline(adj='qfq') 复用现有 pro_bar 取数逻辑获取
+        前复权 OHLC，再通过 HistoricalDataService.merge_qfq_prices 以 $set 的方式
+        合并进已存在的日线文档（不会新建文档，普通行情同步和复权价同步互不覆盖）。
+
+        注意：TushareAdapter.get_kline 目前不支持按起止日期取数（只有 limit 参数），
+        因此这里先按较大的 limit 拉取，再在本地按 start_date/end_date 过滤。
+
+        Args:
+            symbol: 股票代码（6位，如 000001）
+            start_date: 开始日期，YYYYMMDD 或 YYYY-MM-DD
+            end_date: 结束日期，YYYYMMDD 或 YYYY-MM-DD
+
+        Returns:
+            {"symbol": symbol, "saved": 实际更新的记录数}
+        """
+        from app.services.data_sources.tushare_adapter import TushareAdapter
+
+        if self.historical_service is None:
+            self.historical_service = await get_historical_data_service()
+
+        start_compact = (start_date or "").replace("-", "")[:8]
+        end_compact = (end_date or "").replace("-", "")[:8]
+
+        adapter = TushareAdapter()
+        bars = adapter.get_kline(code=symbol, period="day", limit=99999, adj="qfq")
+
+        if not bars:
+            logger.warning(f"⚠️ {symbol} 未获取到前复权日线数据 (start={start_date}, end={end_date})")
+            return {"symbol": symbol, "saved": 0}
+
+        records = []
+        for bar in bars:
+            trade_date = str(bar.get("time") or "").replace("-", "")[:8]
+            if not trade_date:
+                continue
+            if start_compact and trade_date < start_compact:
+                continue
+            if end_compact and trade_date > end_compact:
+                continue
+
+            records.append({
+                "trade_date": trade_date,
+                "open_qfq": bar.get("open"),
+                "high_qfq": bar.get("high"),
+                "low_qfq": bar.get("low"),
+                "close_qfq": bar.get("close"),
+            })
+
+        if not records:
+            logger.warning(
+                f"⚠️ {symbol} 前复权日线数据在 {start_date}~{end_date} 范围内无记录"
+            )
+            return {"symbol": symbol, "saved": 0}
+
+        saved = await self.historical_service.merge_qfq_prices(symbol, records)
+        logger.info(f"✅ {symbol} 前复权价同步完成: {saved}/{len(records)} 条记录已更新")
+        return {"symbol": symbol, "saved": saved}
+
     # ==================== 财务数据同步 ====================
 
     async def sync_financial_data(self, symbols: List[str] = None, limit: int = 20, job_id: str = None) -> Dict[str, Any]:
