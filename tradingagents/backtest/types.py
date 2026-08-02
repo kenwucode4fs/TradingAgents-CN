@@ -1,6 +1,7 @@
 """回测引擎核心数据类型。"""
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Literal
 
 
 class Action(Enum):
@@ -38,7 +39,7 @@ class Trade:
     """交易记录。"""
     date: str
     """交易日期"""
-    side: str
+    side: Literal['buy', 'sell']
     """交易方向: 'buy' 或 'sell'"""
     price: float
     """成交价格"""
@@ -70,7 +71,7 @@ class PositionConfig:
     """持仓配置。"""
     parts: int = 3
     """分仓数量"""
-    reduce_mode: str = "reduce_one"
+    reduce_mode: Literal['reduce_one', 'clear_all'] = "reduce_one"
     """减仓模式: 'reduce_one' 或 'clear_all'"""
 
 
