@@ -26,7 +26,7 @@ def bars_from_records(records: list, symbol: str, st_service=None) -> List[Bar]:
     """
     rows = sorted(records, key=lambda r: _to_dash_date(r["trade_date"]))
     bars: List[Bar] = []
-    for r in rows:
+    for idx, r in enumerate(rows):
         date = _to_dash_date(r["trade_date"])
         missing = [f for f in _QFQ_FIELDS if r.get(f) is None]
         if missing:
@@ -35,11 +35,35 @@ def bars_from_records(records: list, symbol: str, st_service=None) -> List[Bar]:
             )
         vol = r.get("volume") or 0
         is_st = bool(st_service.is_st(symbol, date)) if st_service else False
+        open_qfq, high_qfq = r.get("open_qfq"), r.get("high_qfq")
+        low_qfq, close_qfq = r.get("low_qfq"), r.get("close_qfq")
+
+        # pre_close 必须与 open/high/low/close 同为前复权口径，否则 broker 用
+        # market_rules.limit_up/down_price(bar.pre_close, ...) 算出的涨跌停价
+        # 会和前复权的 bar.open 标度不一致，导致涨跌停判定系统性失真
+        # （多年分红股会被误判成一字跌停/涨停）。
+        # 前复权序列的性质：当日复权昨收 = 前一交易日的复权收盘价。
+        if idx == 0:
+            # 首日没有"前一条记录"可用，借助当日复权因子把库里的原始
+            # pre_close 换算成前复权口径：f0 = close_qfq / close_raw，
+            # pre_close_qfq = pre_close_raw * f0。
+            raw_close = r.get("close")
+            raw_pre_close = r.get("pre_close")
+            if raw_close is not None and raw_close != 0 and raw_pre_close is not None:
+                f0 = close_qfq / raw_close
+                pre_close = raw_pre_close * f0
+            else:
+                # 原始 close 缺失/为 0 无法算复权因子，兜底用当日复权开盘价，
+                # 保证至少与 open 同口径（不会跨标度触发误判涨跌停）。
+                pre_close = open_qfq
+        else:
+            pre_close = bars[-1].close
+
         bars.append(Bar(
             date=date,
-            open=r.get("open_qfq"), high=r.get("high_qfq"),
-            low=r.get("low_qfq"), close=r.get("close_qfq"),
-            pre_close=r.get("pre_close"), volume=vol,
+            open=open_qfq, high=high_qfq,
+            low=low_qfq, close=close_qfq,
+            pre_close=pre_close, volume=vol,
             suspended=(vol == 0), is_st=is_st,
         ))
     return bars
