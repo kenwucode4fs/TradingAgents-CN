@@ -579,6 +579,32 @@ class TushareSyncService:
         logger.info(f"📋 从 stock_basic_info 获取到 {len(symbols)} 只股票（已排除退市股票）")
         return symbols
 
+    async def _get_active_a_share_symbols(self) -> List[str]:
+        """
+        获取"活跃"A股股票代码列表：即 `stock_daily_quotes` 中已有原始日线记录的股票
+
+        `_get_all_a_share_symbols()` 取自 `stock_basic_info`，是全部A股（约1.66万只，
+        含大量退市/停牌无数据/重复废码）；而前复权价（qfq）本质是对已有原始日线的
+        改写，对没有原始数据的股票拉复权价，merge 时找不到匹配文档，纯属浪费 API
+        配额和时间。这里改为直接从 `stock_daily_quotes` 取实际有数据的股票（约5492只），
+        供 `sync_all_qfq(symbols=None)` 使用，可以让每日全量重拉复权价快好几倍。
+
+        用 aggregate + $group（而非 collection.distinct）：`distinct` 命令没有
+        allowDiskUse 选项，理论上大集合、高基数字段聚合时有内存超限风险；
+        aggregate 支持 allowDiskUse=True，且 `symbol` 字段已建索引，$group
+        可以走索引扫描，性能不会比 distinct 差。
+
+        Returns:
+            股票代码列表（如 ["000001", "600000", ...]）
+        """
+        cursor = self.db.stock_daily_quotes.aggregate(
+            [{"$group": {"_id": "$symbol"}}],
+            allowDiskUse=True
+        )
+        symbols = [doc["_id"] async for doc in cursor if doc.get("_id")]
+        logger.info(f"📋 从 stock_daily_quotes 获取到 {len(symbols)} 只活跃股票（已有原始日线数据）")
+        return symbols
+
     async def sync_historical_data(
         self,
         symbols: List[str] = None,
@@ -935,7 +961,10 @@ class TushareSyncService:
           绝不因为个别股票（停牌、退市、数据异常等）中断整个批次。
 
         Args:
-            symbols: 股票代码列表；为 None 时复用 `_get_all_a_share_symbols()` 获取全部A股
+            symbols: 股票代码列表；为 None 时复用 `_get_active_a_share_symbols()` 获取
+                "活跃股"（即 stock_daily_quotes 中已有原始日线记录的股票，约5492只），
+                而非 stock_basic_info 全部A股（约1.66万只，含大量无数据废码），
+                跳过无数据股票可以让每日全量重拉复权价快好几倍
             rate_limit_per_min: 每分钟最大调用次数（默认 120，对应 Tushare 2000 积分档保守限流）
             resume: 是否启用断点续传（跳过 sync_progress 中已 status=="done" 的股票）
             job_id: 任务ID（用于对接 scheduler 的取消/进度跟踪，可选）
@@ -944,11 +973,11 @@ class TushareSyncService:
             {"total": 总数, "done": 成功数, "failed": 失败数, "skipped": 跳过数}
         """
         logger.info(
-            f"🔄 开始批量同步全市场前复权价 (rate_limit={rate_limit_per_min}次/分钟, resume={resume})..."
+            f"🔄 开始批量同步前复权价 (rate_limit={rate_limit_per_min}次/分钟, resume={resume})..."
         )
 
         if symbols is None:
-            symbols = await self._get_all_a_share_symbols()
+            symbols = await self._get_active_a_share_symbols()
 
         total = len(symbols)
         stats: Dict[str, Any] = {"total": total, "done": 0, "failed": 0, "skipped": 0}

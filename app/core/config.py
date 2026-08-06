@@ -257,8 +257,9 @@ class Settings(BaseSettings):
         default=False, description="启用每日全量A股历史数据同步（原始日线+前复权价）"
     )
     TUSHARE_FULL_A_SHARE_SYNC_CRON: str = Field(
-        default="0 18 * * 1-5", description="全量A股历史数据同步CRON表达式"
-    )  # 工作日18点（收盘后）
+        default="0 22 * * 1-5", description="全量A股历史数据同步CRON表达式"
+    )  # 工作日22点：A股15点收盘，Tushare日线/复权因子当晚数据通常18-20点才稳定更新完毕，
+       # 18点跑容易拉到当天未完整更新的数据，改为22点留出余量
     TUSHARE_FULL_A_SHARE_SYNC_QFQ_RATE_LIMIT_PER_MIN: int = Field(
         default=120, ge=1, le=2000, description="前复权价同步每分钟最大调用次数（2000积分档保守默认120）"
     )
