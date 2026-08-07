@@ -69,10 +69,17 @@ def bars_from_records(records: list, symbol: str, st_service=None) -> List[Bar]:
     return bars
 
 
-def load_bars(symbol: str, start_date: str, end_date: str, st_service=None) -> List[Bar]:
-    """从 historical_data_service 读数据并转 Bar。缺复权字段则报错。
+async def async_load_bars(symbol: str, start_date: str, end_date: str, st_service=None) -> List[Bar]:
+    """`load_bars` 的原生协程版本：直接 await，不自建事件循环。
 
-    内部把 async 的 get_historical_data 用 asyncio.run 包成同步调用。
+    供已经身处事件循环中的调用方使用（如 Web 层 `app/services/backtest_service.py`
+    在主事件循环里预取 K 线），避免像 `load_bars` 那样用 `asyncio.run` 另起一个
+    独立事件循环——若调用方自身也运行在事件循环里（例如 FastAPI 的
+    `BackgroundTasks`），`asyncio.run` 会报 "cannot be called from a running
+    event loop"；即便躲开这一层，`HistoricalDataService` 底层的 Motor 客户端是
+    进程级共享、绑定在主事件循环上的，从另一个独立事件循环（哪怕是同线程新建的）
+    去用它也会报 "attached to a different loop"。所以真正安全的用法是：全程留在
+    调用方所在的（主）事件循环里 await，不新建循环。
 
     Args:
         symbol: 股票代码。
@@ -89,18 +96,37 @@ def load_bars(symbol: str, start_date: str, end_date: str, st_service=None) -> L
     from app.services.historical_data_service import HistoricalDataService
 
     svc = HistoricalDataService()
-
-    async def _run():
-        await svc.initialize()
-        return await svc.get_historical_data(
-            symbol, start_date, end_date, data_source="tushare", period="daily"
-        )
-
-    records = asyncio.run(_run())
+    await svc.initialize()
+    records = await svc.get_historical_data(
+        symbol, start_date, end_date, data_source="tushare", period="daily"
+    )
     if not records:
         raise ValueError(f"无历史数据：{symbol} {start_date}~{end_date}，请先同步")
     # 逐行复权价校验交给 bars_from_records（增量同步可能导致中间日期缺复权价，
     # 不能只查首条记录）。
     if st_service:
-        asyncio.run(st_service.load(symbol))
+        await st_service.load(symbol)
     return bars_from_records(records, symbol, st_service)
+
+
+def load_bars(symbol: str, start_date: str, end_date: str, st_service=None) -> List[Bar]:
+    """`async_load_bars` 的同步包装：用 `asyncio.run` 另起一个独立事件循环执行。
+
+    供 Plan 1 引擎脱离 Web 独立运行的场景使用（如脚本、CLI、
+    `run_backtest(bars=None)` 的非 Web 调用方），此时不存在"调用方已身处事件
+    循环"的问题，`asyncio.run` 是安全的。Web 层（FastAPI 事件循环内）应改用
+    `async_load_bars`，见其 docstring。
+
+    Args:
+        symbol: 股票代码。
+        start_date: 起始日期 YYYY-MM-DD。
+        end_date: 结束日期 YYYY-MM-DD。
+        st_service: 可选的 StStatusService 实例，用于 ST 标记；传入时会先 load(symbol)。
+
+    Returns:
+        按日期升序排列的 Bar 列表。
+
+    Raises:
+        ValueError: 无历史数据，或缺前复权价字段（需先跑复权同步）。
+    """
+    return asyncio.run(async_load_bars(symbol, start_date, end_date, st_service))

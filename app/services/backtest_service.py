@@ -1,10 +1,22 @@
-"""回测异步 worker：用线程池跑 Plan 1 回测引擎，结果落库。
+"""回测异步 worker：主循环预取 K 线 + 线程池跑 Plan 1 回测引擎，结果落库。
 
-关键约束：`tradingagents.backtest.run_backtest` 内部（经 data_feed.load_bars）
-会调用 `asyncio.run(...)`。而本 worker 运行在 FastAPI 的事件循环协程中，
-若直接同步调用会撞上"asyncio.run() cannot be called from a running event loop"。
-因此必须通过 `loop.run_in_executor(None, ...)` 把 run_backtest 丢到线程池里，
-在一个独立、非运行中的事件循环里执行，从而避免事件循环冲突。
+关键约束（主循环预取，方案 B）：`tradingagents.backtest.run_backtest` 在
+`bars=None` 时内部会走 `data_feed.load_bars`，其同步版本用 `asyncio.run(...)`
+另起一个独立事件循环——而本 worker 运行在 FastAPI 的事件循环协程中，若直接
+同步调用 `run_backtest(bars=None)` 会撞上 "asyncio.run() cannot be called
+from a running event loop"；即便把 `run_backtest` 整体丢进线程池
+（`run_in_executor`）以避开这一层，线程池新线程里 `load_bars` 自己另建的
+事件循环，去用进程级共享、已绑定在**主事件循环**上的 Motor 客户端
+（`HistoricalDataService` -> `app.core.database.get_database()`）时，又会
+撞上 "attached to a different loop"（Motor 客户端不可跨事件循环/线程复用）。
+
+因此正确的编排是：把"取数据"和"跑计算"拆开——
+- 取数据（IO）：留在**主事件循环**里，用 `data_feed.async_load_bars`
+  直接 `await`（不新建事件循环，安全复用主循环绑定的 Motor 客户端）。
+- 跑计算（纯 CPU，含指标计算等同步逻辑）：把已经预取好 bars 的
+  `run_backtest(..., bars=bars)` 丢进线程池（`run_in_executor`），此时
+  `run_backtest` 不会再触发 `load_bars`/`asyncio.run` 分支，线程池内不产生
+  任何新的事件循环，自然不会有事件循环冲突。
 """
 import asyncio
 from datetime import datetime, timezone
@@ -13,6 +25,7 @@ import app.core.database as db_module
 from app.core.database import get_mongo_db, db_manager
 from app.services.backtest_param_mapper import build_backtest_args
 from tradingagents.backtest import run_backtest
+from tradingagents.backtest.data_feed import async_load_bars
 
 
 async def ensure_db() -> None:
@@ -48,17 +61,25 @@ async def run_backtest_task(task_id: str, user_id: str, payload: dict, bars=None
         task_id: 任务 ID，用作落库的唯一键（upsert）。
         user_id: 发起用户 ID。
         payload: 前端回测请求 payload（见 backtest_param_mapper.build_backtest_args）。
-        bars: 预取的 K 线序列，测试场景注入以绕开 tushare；生产环境为 None
-            时由引擎内部通过 data_feed.load_bars 从库读取。
+        bars: 预取的 K 线序列，测试场景可显式注入以绕开真实查库；为 None
+            （生产环境默认）时本函数会先在当前主事件循环里用
+            `data_feed.async_load_bars` 预取好 bars，再传给线程池里的
+            `run_backtest`（见模块顶部关键约束说明）。
 
     Returns:
         `BacktestResult.to_dict()` 的结果字典（含 config/equity_curve/
         benchmark_curve/metrics/trades）。
     """
     args = build_backtest_args(payload)
+    if bars is None:
+        # 主循环预取（方案 B）：留在当前（主）事件循环里 await，安全复用主循环
+        # 绑定的 Motor 客户端；st_service 传 None——Web 路径的
+        # backtest_param_mapper 不产生 ST 服务实例。
+        config = args["config"]
+        bars = await async_load_bars(config.symbol, config.start_date, config.end_date)
     loop = asyncio.get_event_loop()
-    # 关键：run_backtest 内部有 asyncio.run，必须丢到线程池（独立事件循环）执行，
-    # 避免与当前（FastAPI）事件循环冲突。
+    # bars 已预取好，run_backtest 不会再走 data_feed.load_bars/asyncio.run 分支，
+    # 线程池里只跑纯 CPU 计算，不产生新的事件循环，自然不会有事件循环冲突。
     result = await loop.run_in_executor(
         None,
         lambda: run_backtest(
