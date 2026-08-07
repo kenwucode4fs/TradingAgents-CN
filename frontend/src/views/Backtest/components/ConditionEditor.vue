@@ -32,7 +32,7 @@
           v-model="rule.op"
           placeholder="比较符"
           class="condition-select condition-select-op"
-          @change="handleChange"
+          @change="handleOpChange(rule)"
         >
           <el-option
             v-for="opt in OPERATOR_OPTIONS"
@@ -48,7 +48,7 @@
           class="condition-value-type"
           @change="handleValueTypeChange(rule)"
         >
-          <el-radio-button label="value">数值</el-radio-button>
+          <el-radio-button label="value" :disabled="isCrossOp(rule.op)">数值</el-radio-button>
           <el-radio-button label="indicator">指标</el-radio-button>
         </el-radio-group>
 
@@ -145,8 +145,7 @@ const INDICATOR_OPTIONS = [
   { label: 'BOLL 上轨', value: 'boll_up' },
   { label: 'BOLL 中轨', value: 'boll_mid' },
   { label: 'BOLL 下轨', value: 'boll_low' },
-  { label: '收盘价', value: 'close' },
-  { label: '成交量', value: 'volume' }
+  { label: '收盘价', value: 'close' }
 ] as const
 
 const OPERATOR_OPTIONS: Array<{ label: string; value: OperatorType }> = [
@@ -157,6 +156,13 @@ const OPERATOR_OPTIONS: Array<{ label: string; value: OperatorType }> = [
 ]
 
 const DEFAULT_INDICATOR = INDICATOR_OPTIONS[0].value
+// cross_up/cross_down 要求右值必须是指标序列，切到 cross 时用它作为重置默认值
+const DEFAULT_CROSS_INDICATOR = 'ma20'
+
+// cross_up/cross_down 两侧都必须是指标序列，引擎不支持右值为数值
+function isCrossOp(op: OperatorType): boolean {
+  return op === 'cross_up' || op === 'cross_down'
+}
 
 // 生成一条默认空规则
 function createDefaultRule(): LocalRule {
@@ -215,6 +221,15 @@ function handleChange() {
 function handleValueTypeChange(rule: LocalRule) {
   // 切换值类型时重置右值为该类型下的合理默认值
   rule.right = rule.valueType === 'value' ? 0 : DEFAULT_INDICATOR
+  emitUpdate()
+}
+
+function handleOpChange(rule: LocalRule) {
+  // cross_up/cross_down 要求右值必须是指标，若之前是数值类型则强制切回指标并重置为合法默认值
+  if (isCrossOp(rule.op) && rule.valueType === 'value') {
+    rule.valueType = 'indicator'
+    rule.right = DEFAULT_CROSS_INDICATOR
+  }
   emitUpdate()
 }
 
