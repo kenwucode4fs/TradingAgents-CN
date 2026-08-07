@@ -55,20 +55,24 @@ async def run(
 
 @router.get("/status/{task_id}")
 async def status(task_id: str, user: dict = Depends(get_current_user)):
-    """查询回测任务状态。"""
+    """查询回测任务状态。
+
+    属主校验：任务不存在 或 属于其他用户，统一返回 404（不用 403），
+    避免向非本人泄露"该 task_id 确实存在"这一信息。
+    """
     await backtest_service.ensure_db()
     task_status = await backtest_service.get_task_status(task_id)
-    if not task_status:
+    if not task_status or task_status.get("user_id") != user["id"]:
         raise HTTPException(status_code=404, detail="任务不存在")
     return {"success": True, "data": task_status}
 
 
 @router.get("/result/{task_id}")
 async def result(task_id: str, user: dict = Depends(get_current_user)):
-    """查询回测结果，任务未完成或不存在时返回 404。"""
+    """查询回测结果，任务未完成/不存在/属于其他用户时统一返回 404。"""
     await backtest_service.ensure_db()
     res = await backtest_service.get_result(task_id)
-    if not res:
+    if not res or res.get("user_id") != user["id"]:
         raise HTTPException(status_code=404, detail="回测结果不存在或未完成")
     return {"success": True, "data": res}
 
