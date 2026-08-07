@@ -36,6 +36,11 @@ def _collection():
     return get_mongo_db().backtest_results
 
 
+def _tasks_collection():
+    """获取 backtest_tasks 集合（记录任务状态，与结果集合分开存放）。"""
+    return get_mongo_db().backtest_tasks
+
+
 async def run_backtest_task(task_id: str, user_id: str, payload: dict, bars=None) -> dict:
     """跑一次回测任务：参数映射 -> 线程池执行引擎 -> 落库 -> 返回结果字典。
 
@@ -75,6 +80,37 @@ async def run_backtest_task(task_id: str, user_id: str, payload: dict, bars=None
     }
     await _collection().update_one({"task_id": task_id}, {"$set": doc}, upsert=True)
     return d
+
+
+async def set_task_status(task_id: str, status: str, error: str = None, user_id: str = None) -> None:
+    """写入/更新回测任务状态（backtest_tasks 集合，按 task_id upsert）。
+
+    路由层用法：POST /run 时先以 status="running" 插入一条记录（附带
+    user_id），BackgroundTasks 跑完后再调用一次更新为 "done"/"failed"
+    （失败时附带 error）。
+
+    Args:
+        task_id: 任务 ID。
+        status: 任务状态，如 "running"/"done"/"failed"。
+        error: 失败原因，仅 status="failed" 时传入。
+        user_id: 发起用户 ID，仅创建任务记录时需要传入。
+    """
+    now = datetime.now(timezone.utc)
+    fields = {"task_id": task_id, "status": status, "updated_at": now}
+    if error is not None:
+        fields["error"] = error
+    if user_id is not None:
+        fields["user_id"] = user_id
+    await _tasks_collection().update_one(
+        {"task_id": task_id},
+        {"$set": fields, "$setOnInsert": {"created_at": now}},
+        upsert=True,
+    )
+
+
+async def get_task_status(task_id: str):
+    """按 task_id 取回测任务状态记录，不存在时返回 None。"""
+    return await _tasks_collection().find_one({"task_id": task_id}, {"_id": 0})
 
 
 async def get_result(task_id: str):
