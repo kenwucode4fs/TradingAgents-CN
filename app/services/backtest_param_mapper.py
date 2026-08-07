@@ -16,13 +16,19 @@ def _rules(raw: list) -> list:
         Condition 对象列表。
 
     Raises:
-        ValueError: 当比较符非法时。
+        ValueError: 当规则字段缺失或比较符非法时。
     """
     out = []
-    for r in raw or []:
+    for i, r in enumerate(raw or []):
+        # 验证必填字段
+        if "left" not in r:
+            raise ValueError(f"规则 {i} 缺少字段: left")
+        if "right" not in r:
+            raise ValueError(f"规则 {i} 缺少字段: right")
+
         op = r.get("op")
         if op not in _VALID_OP:
-            raise ValueError(f"非法比较符: {op}")
+            raise ValueError(f"规则 {i} 非法比较符: {op}")
         out.append(Condition(left=r["left"], op=op, right=r["right"]))
     return out
 
@@ -80,20 +86,39 @@ def build_backtest_args(payload: dict) -> dict:
     if reduce_mode not in _VALID_REDUCE:
         raise ValueError(f"非法减仓模式: {reduce_mode}")
 
+    # 安全转换数值
+    try:
+        initial_capital = float(payload.get("initial_capital", 100000))
+    except (ValueError, TypeError):
+        raise ValueError(f"initial_capital 必须是数字，当前值: {payload.get('initial_capital')}")
+
+    try:
+        commission_rate = float(c.get("commission_rate", 0.00025))
+        min_commission = float(c.get("min_commission", 5.0))
+        stamp_tax_rate = float(c.get("stamp_tax_rate", 0.001))
+        transfer_fee_rate = float(c.get("transfer_fee_rate", 0.00001))
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"成本参数转换失败: {str(e)}")
+
+    try:
+        parts = int(p.get("parts", 3))
+    except (ValueError, TypeError):
+        raise ValueError(f"parts 必须是整数，当前值: {p.get('parts')}")
+
     # 构建 BacktestConfig 对象
     cfg = BacktestConfig(
         symbol=payload["symbol"],
         start_date=payload["start_date"],
         end_date=payload["end_date"],
-        initial_capital=float(payload.get("initial_capital", 100000)),
+        initial_capital=initial_capital,
         cost=CostConfig(
-            commission_rate=float(c.get("commission_rate", 0.00025)),
-            min_commission=float(c.get("min_commission", 5.0)),
-            stamp_tax_rate=float(c.get("stamp_tax_rate", 0.001)),
-            transfer_fee_rate=float(c.get("transfer_fee_rate", 0.00001)),
+            commission_rate=commission_rate,
+            min_commission=min_commission,
+            stamp_tax_rate=stamp_tax_rate,
+            transfer_fee_rate=transfer_fee_rate,
         ),
         position=PositionConfig(
-            parts=int(p.get("parts", 3)),
+            parts=parts,
             reduce_mode=reduce_mode
         ),
     )
