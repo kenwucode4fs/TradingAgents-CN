@@ -37,6 +37,11 @@
       <template #title>股票筛选</template>
     </el-menu-item>
 
+    <el-menu-item index="/backtest">
+      <el-icon><Histogram /></el-icon>
+      <template #title>策略回测</template>
+    </el-menu-item>
+
     <el-menu-item index="/favorites">
       <el-icon><Star /></el-icon>
       <template #title>我的自选股</template>
@@ -112,7 +117,8 @@ import {
   /* Document 移除：不再使用顶级分析报告菜单图标 */
   Setting,
   InfoFilled,
-  CreditCard
+  CreditCard,
+  Histogram
 } from '@element-plus/icons-vue'
 
 const route = useRoute()

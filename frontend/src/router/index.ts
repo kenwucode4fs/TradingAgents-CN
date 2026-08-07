@@ -93,6 +93,29 @@ const routes: RouteRecordRaw[] = [
   },
 
   {
+    path: '/backtest',
+    name: 'Backtest',
+    component: () => import('@/layouts/BasicLayout.vue'),
+    meta: {
+      title: '策略回测',
+      icon: 'Histogram',
+      requiresAuth: true,
+      transition: 'slide-up'
+    },
+    children: [
+      {
+        path: '',
+        name: 'BacktestHome',
+        component: () => import('@/views/Backtest/index.vue'),
+        meta: {
+          title: '策略回测',
+          requiresAuth: true
+        }
+      }
+    ]
+  },
+
+  {
     path: '/favorites',
     name: 'Favorites',
     component: () => import('@/layouts/BasicLayout.vue'),
