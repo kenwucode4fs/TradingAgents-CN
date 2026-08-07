@@ -383,7 +383,7 @@ function startPolling(id: string) {
 
     try {
       const res = await backtestApi.status(id)
-      const status: string = res.data?.status
+      const status = res.data?.status
       if (status === 'done') {
         stopPolling()
         await loadResult(id)

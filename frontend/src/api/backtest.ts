@@ -25,12 +25,15 @@ export interface BacktestTaskResponse {
   [key: string]: any
 }
 
-// 回测任务状态
+// 回测任务状态（与后端 app/routers/backtest.py、
+// app/services/backtest_service.set_task_status 保持一致：
+// 仅 running/done/failed 三种取值，无 pending/completed）
 export interface BacktestStatus {
   task_id: string
-  status: 'pending' | 'running' | 'completed' | 'failed'
+  status: 'running' | 'done' | 'failed'
   progress?: number
   message?: string
+  error?: string
   [key: string]: any
 }
 
