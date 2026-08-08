@@ -29,17 +29,27 @@ def run_portfolio_backtest(config, factor_configs, monthly_sections, price_panel
     rebalances = []
     equity_curve = []
     pending = None  # (成交日, 目标TopN)
+    last_close = {}  # 每股最后已知收盘价（停牌/数据缺口日用于估值兜底）
 
     for di, d in enumerate(trade_days):
+        # 先更新当日可得的收盘价（缺行/停牌则沿用上一次的已知价）
+        for code, rows in by_code.items():
+            row = rows.get(d)
+            if row and row.get("close") is not None:
+                last_close[code] = row["close"]
+
         # 到达上次调仓的"次一交易日"→ 成交
         if pending and d == pending[0]:
             targets = pending[1]
-            prices = {c: by_code.get(c, {}).get(d, {}).get("open") for c in targets}
+            # 目标 + 当前持仓 都要取价：当前持仓中跌出目标榜的，也需要当日成交价才能卖出；
+            # 若当日无价（真停牌）则 prices 里没有该 code，compute_rebalance 会保持不卖。
+            codes_needed = set(targets) | set(holdings)
+            prices = {c: by_code.get(c, {}).get(d, {}).get("open") for c in codes_needed}
             prices = {c: p for c, p in prices.items() if p is not None}
-            pv_before = _portfolio_value(holdings, by_code, d, cash)
+            pv_before = _portfolio_value(holdings, last_close, cash)
             res = compute_rebalance(targets, holdings, prices, cash, cost)
             holdings, cash = res["new_holdings"], res["cash"]
-            weight = _weights(holdings, by_code, d)
+            weight = _weights(holdings, last_close)
             rebalances.append({"date": d, "buys": res["buys"], "sells": res["sells"],
                                "holdings": weight, "portfolio_value": pv_before})
             pending = None
@@ -70,7 +80,7 @@ def run_portfolio_backtest(config, factor_configs, monthly_sections, price_panel
             if nxt:
                 pending = (nxt, targets)
 
-        equity_curve.append((d, _portfolio_value(holdings, by_code, d, cash)))
+        equity_curve.append((d, _portfolio_value(holdings, last_close, cash)))
 
     benchmark_curve = _normalize_benchmark(benchmark, trade_days, cap0)
     metrics = compute_portfolio_metrics(equity_curve, benchmark_curve, cap0, rebalances)
@@ -78,21 +88,21 @@ def run_portfolio_backtest(config, factor_configs, monthly_sections, price_panel
             "benchmark_curve": benchmark_curve, "metrics": metrics, "rebalances": rebalances}
 
 
-def _portfolio_value(holdings, by_code, d, cash):
+def _portfolio_value(holdings, last_close, cash):
+    """持仓市值 + 现金。停牌/当日缺数据时用该股最后已知收盘价估值,避免净值假暴跌。"""
     v = cash
     for code, sh in holdings.items():
-        row = by_code.get(code, {}).get(d)
-        if row and row.get("close") is not None:
-            v += sh * row["close"]
+        px = last_close.get(code)
+        if px is not None:
+            v += sh * px
     return v
 
 
-def _weights(holdings, by_code, d):
-    total = _portfolio_value(holdings, by_code, d, 0.0)
+def _weights(holdings, last_close):
+    total = _portfolio_value(holdings, last_close, 0.0)
     out = []
     for code, sh in holdings.items():
-        row = by_code.get(code, {}).get(d)
-        px = row["close"] if row and row.get("close") is not None else 0.0
+        px = last_close.get(code) or 0.0
         out.append({"code": code, "weight": (sh * px / total) if total > 0 else 0.0})
     return out
 
