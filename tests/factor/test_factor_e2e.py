@@ -73,6 +73,10 @@ def test_full_factor_screen_flow():
         assert top["rank"] == 1
         assert 0.0 <= top["score"] <= 1.0
         assert "pe" in top["factors"]
+        # 回归断言：get_candidates 已按 code 去重（每股取最优截面），
+        # 榜单里不应再出现同一 code 重复上榜（此前 000001 曾出现两次）。
+        codes = [x["code"] for x in data["items"]]
+        assert len(codes) == len(set(codes)), f"榜单不应有重复 code: {codes}"
         print("TopN:", [(x["code"], round(x["score"], 3)) for x in data["items"][:5]])
     finally:
         app.dependency_overrides.pop(get_current_user, None)
