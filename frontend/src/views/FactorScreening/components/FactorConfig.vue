@@ -25,6 +25,7 @@
                 :min="0.01"
                 :precision="2"
                 :step="0.1"
+                value-on-clear="min"
                 size="small"
                 class="factor-config-weight"
                 @change="emitUpdate"
@@ -83,10 +84,19 @@ interface Emits {
   (e: 'update:modelValue', value: FactorConfigItem[]): void
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), {
+  modelValue: () => [],
+  factorsMeta: () => []
+})
 const emit = defineEmits<Emits>()
 
 const DEFAULT_WEIGHT = 1
+
+// 权重兜底：非正数/非有限数（如输入框被清空产生的 null/NaN）一律回落到默认权重，
+// 保证 emit 出去的每个已启用项 weight 都满足后端 ">0" 契约，避免 None>0 触发 TypeError
+function sanitizeWeight(weight: number): number {
+  return Number.isFinite(weight) && weight > 0 ? weight : DEFAULT_WEIGHT
+}
 
 // key -> 本地状态；不直接 mutate props，所有交互都读写这份本地副本
 const localState = reactive<Record<string, LocalFactorState>>({})
@@ -111,7 +121,7 @@ function toConfigItems(): FactorConfigItem[] {
     .filter((meta) => localState[meta.key]?.enabled)
     .map((meta) => ({
       key: meta.key,
-      weight: localState[meta.key].weight,
+      weight: sanitizeWeight(localState[meta.key].weight),
       direction: localState[meta.key].direction
     }))
 }
