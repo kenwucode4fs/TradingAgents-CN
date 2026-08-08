@@ -6,6 +6,15 @@
 import { request, type ApiResponse } from './request'
 import type { FactorConfigItem } from './factorScreening'
 
+// 交易成本配置（对应后端 tradingagents/backtest/types.py CostConfig，均为可选，
+// 缺省字段由后端 CostConfig 的 dataclass 默认值兜底）
+export interface PortfolioCostConfig {
+  commission_rate?: number
+  min_commission?: number
+  stamp_tax_rate?: number
+  transfer_fee_rate?: number
+}
+
 // 组合回测请求参数（与后端 app/routers/portfolio_backtest.py 校验的字段一致）
 export interface PortfolioBacktestRunRequest {
   factors: FactorConfigItem[]
@@ -13,7 +22,7 @@ export interface PortfolioBacktestRunRequest {
   end_date: string
   top_n: number
   initial_capital: number
-  cost?: number
+  cost?: PortfolioCostConfig
 }
 
 // 组合回测任务创建响应
