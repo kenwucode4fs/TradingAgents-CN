@@ -4,6 +4,8 @@
 （预取 -> run_in_executor 执行引擎 -> 落库），以及 get_result 能取回
 落库结果，且带上正确的 user_id 属主字段。
 """
+from datetime import datetime, timedelta
+
 import pytest
 
 from app.core.database import db_manager
@@ -43,4 +45,60 @@ def test_run_task_with_injected_data():
         assert "equity_curve" in res and res["metrics"]
         got = await svc.get_result("t-pf-1")
         assert got and got["user_id"] == "user-x"
+    asyncio.run(_run())
+
+
+@pytest.mark.integration
+def test_load_price_panel_query_has_time_window(monkeypatch):
+    """load_price_panel 需按 LOOKBACK_CALENDAR_DAYS 给 stock_daily_quotes.find 的
+    filter 加 trade_date 下界，避免全市场候选池（防幸存者并集，几千只股票）
+    被无界拉取从上市到 end 的全部 ~20 年历史行（千万行级别），导致游标遍历
+    超时被 MongoDB 回收报 CursorNotFound（code 43）。
+
+    直接 spy 住 find() 的调用参数，断言 filter 里带了 trade_date 下界，防止
+    有人误删 `trade_date: {"$gte": cutoff}` 导致回归。
+    """
+    import asyncio
+
+    async def _run():
+        _reset_mongo_client()
+        await svc.ensure_db()
+        real_db = svc.get_mongo_db()
+        real_coll = real_db.stock_daily_quotes
+        captured = {}
+
+        class _SpyCollection:
+            def find(self, flt, *a, **kw):
+                captured["filter"] = flt
+                return real_coll.find(flt, *a, **kw)
+
+        class _DBStub:
+            def __getattr__(self, name):
+                if name == "stock_daily_quotes":
+                    return _SpyCollection()
+                return getattr(real_db, name)
+
+        start, end = "2024-06-30", "2024-12-31"
+        await svc.load_price_panel(_DBStub(), ["000001"], start, end)
+
+        # 核心断言 1：查询 filter 里必须带 trade_date 下界（防"误删时间窗"回归）
+        f = captured.get("filter")
+        assert f is not None, "未捕获到 stock_daily_quotes.find 调用"
+        assert "trade_date" in f and "$gte" in f["trade_date"], f"查询未带时间窗: {f}"
+        cutoff = f["trade_date"]["$gte"]
+
+        # 核心断言 2：cutoff 必须是与 stock_daily_quotes.trade_date 一致的带
+        # 横线 "YYYY-MM-DD" 格式（防"格式不一致导致字符串比较错乱"回归：曾
+        # 误用无横线的 "%Y%m%d"，'-'(0x2D) < '0'(0x30) 导致带横线的日期被
+        # 误判小于 cutoff 而整年被过滤掉）。
+        assert isinstance(cutoff, str) and len(cutoff) == 10 and cutoff.count("-") == 2, \
+            f"cutoff 应为 YYYY-MM-DD 格式，实际: {cutoff}"
+        assert cutoff < start, f"cutoff 应早于 start，实际: {cutoff}"
+
+        # 核心断言 3：cutoff 确实是 start 往前约 LOOKBACK_CALENDAR_DAYS(500) 自然日
+        expected = (datetime.strptime(start, "%Y-%m-%d")
+                    - timedelta(days=svc.LOOKBACK_CALENDAR_DAYS)).strftime("%Y-%m-%d")
+        assert cutoff == expected, f"cutoff 应为 start-{svc.LOOKBACK_CALENDAR_DAYS}天，期望 {expected}，实际 {cutoff}"
+
+        assert f["trade_date"]["$lte"] == end
     asyncio.run(_run())

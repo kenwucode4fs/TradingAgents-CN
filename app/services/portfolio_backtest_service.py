@@ -11,9 +11,20 @@
 取自各月末截面 `stock_monthly_basic` 里出现过的 code 之并集，而不是当前
 最新截面的 `stock_screening_view`（后者会漏掉回测区间内已退市的股票，
 导致选股结果系统性偏好"活到最后"的股票）。
+
+`load_price_panel` 时间窗（同 2a `fetch_price_series` 的血泪教训）：候选池
+是全市场几千只股票的防幸存者并集，若查询不加 `trade_date` 下界，会把每只
+候选股从上市到 `end` 的全部 ~20 年历史都拉出来（千万行级别），游标遍历
+太慢会被 MongoDB 回收报 `CursorNotFound`（code 43）。回测最早的调仓日
+≈ `start`，引擎在该日算最长因子（`high_250_prox` 需约 250 交易日）只需要
+该日往前约 250 交易日的历史，故取 `[start - LOOKBACK_CALENDAR_DAYS 自然日,
+end]` 的时间窗已覆盖有余（500 自然日 ≈ 340 交易日）。cutoff 必须用带横线
+的 "YYYY-MM-DD" 格式，与 `stock_daily_quotes.trade_date` 一致——2a 曾因
+用无横线的 "%Y%m%d" 与带横线数据做字符串比较，'-' (0x2D) < '0' (0x30)
+导致整年数据被误判过滤掉。
 """
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import app.core.database as db_module
 from app.core.database import get_mongo_db, db_manager
@@ -21,6 +32,11 @@ from tradingagents.backtest.types import CostConfig
 from tradingagents.portfolio import run_portfolio_backtest
 
 BENCHMARK_TS = "000300.SH"
+
+# load_price_panel 时间窗下界（自然日）。含义与取值同 factor_screening_service
+# 的 LOOKBACK_CALENDAR_DAYS：覆盖引擎最长因子（high_250_prox ≈ 250 交易日）
+# 所需的历史，又避免无界拉取全市场候选股近 20 年全部历史行导致游标超时。
+LOOKBACK_CALENDAR_DAYS = 500
 
 
 async def ensure_db() -> None:
@@ -61,16 +77,22 @@ async def load_monthly_sections(db, start: str, end: str) -> dict:
     return out
 
 
-async def load_price_panel(db, codes, end: str) -> dict:
-    """从 `stock_daily_quotes` 批量取 codes 的 `trade_date <= end` 前复权日线。
+async def load_price_panel(db, codes, start: str, end: str) -> dict:
+    """从 `stock_daily_quotes` 批量取 codes 的 `[start-500自然日, end]` 前复权日线。
+
+    时间窗下界见模块顶部 `LOOKBACK_CALENDAR_DAYS` 说明：候选池是全市场防
+    幸存者并集（几千只股票），若不加下界会把每只候选股从上市到 `end` 的
+    全部历史都拉出来（千万行级别），导致游标遍历超时被 MongoDB 回收
+    （`CursorNotFound`，code 43）。
 
     Returns:
         `{code: [{date, open, close, volume}...]}`，按 trade_date 升序，
         过滤 close_qfq 为 None 的记录。
     """
+    cutoff = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=LOOKBACK_CALENDAR_DAYS)).strftime("%Y-%m-%d")
     out = {}
     cur = db.stock_daily_quotes.find(
-        {"symbol": {"$in": list(codes)}, "trade_date": {"$lte": end}, "close_qfq": {"$ne": None}},
+        {"symbol": {"$in": list(codes)}, "trade_date": {"$gte": cutoff, "$lte": end}, "close_qfq": {"$ne": None}},
         {"_id": 0, "symbol": 1, "trade_date": 1, "open_qfq": 1, "close_qfq": 1, "volume": 1},
     ).sort("trade_date", 1)
     async for d in cur:
@@ -120,7 +142,7 @@ async def run_task(task_id: str, user_id: str, payload: dict, precomputed: dict 
         # 防幸存者偏差：候选 codes 来自各月末截面的并集，而非最新截面
         # stock_screening_view（后者不含回测区间内已退市的股票）。
         codes = {c for sec in sections.values() for c in sec}
-        panel = await load_price_panel(db, codes, end)
+        panel = await load_price_panel(db, codes, start, end)
         benchmark = await load_benchmark(db, BENCHMARK_TS, start, end)
 
     c = payload.get("cost") or {}
