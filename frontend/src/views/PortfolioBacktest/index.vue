@@ -80,7 +80,7 @@
         <el-alert v-if="polling" type="info" :closable="false" show-icon class="progress-alert">
           <template #title>
             <el-icon class="rotating-icon"><Loading /></el-icon>
-            组合回测计算中，已用时 {{ elapsedSeconds }} 秒，可能需要几分钟，请耐心等待...
+            组合回测需遍历全市场候选股逐月调仓，通常需要 10 分钟以上，已用时 {{ elapsedSeconds }} 秒，请耐心等待，勿关闭页面...
           </template>
         </el-alert>
       </el-form>
@@ -250,8 +250,8 @@ function buildPayload(): PortfolioBacktestRunRequest {
 }
 
 // ------- 提交与轮询 -------
-// 组合回测计算耗时较长（真实多年区间回测约几分钟），轮询超时上限需给足，
-// 避免真实计算尚未完成就被前端提前判定为超时
+// 组合回测计算耗时较长（容器化冒烟实测：全市场候选+2年区间约13分钟才 done），
+// 轮询超时上限需给足余量，避免真实计算尚未完成就被前端提前判定为超时
 const submitting = ref(false)
 const polling = ref(false)
 const elapsedSeconds = ref(0)
@@ -263,7 +263,7 @@ let elapsedTimer: ReturnType<typeof setInterval> | null = null
 let pollStartTime = 0
 
 const POLL_INTERVAL = 1000
-const POLL_TIMEOUT = 10 * 60 * 1000 // 10分钟超时
+const POLL_TIMEOUT = 20 * 60 * 1000 // 20分钟超时（全市场候选+多年区间实测约13分钟，留足余量）
 
 async function submitBacktest() {
   if (!validateForm()) return
