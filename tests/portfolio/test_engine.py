@@ -1,4 +1,5 @@
 """组合回测主循环测试:验证防前视偏差、T+1 次日开盘成交、每日净值、逐月调仓。"""
+import datetime
 from tradingagents.portfolio import run_portfolio_backtest
 from tradingagents.backtest.types import CostConfig
 
@@ -85,3 +86,31 @@ def test_suspended_day_uses_last_known_close_not_zero():
     assert eq["2024-02-02"] > 0
     # 缺口日与前一日持仓、价格均未变化,净值应完全相同(用最后已知价兜底),而不是跌成 0
     assert eq["2024-02-02"] == eq["2024-02-01"]
+
+
+def test_first_rebalance_uses_lookback_history_before_start():
+    # price_panel 里预取了 start 之前的 lookback 历史(如实际场景约 500 天),
+    # 回测区间起点(start)附近就调仓,因子用 mom_60(需要 61 个收盘点)。
+    # 若引擎错误地只从 [start,end] 内的 trade_days 取 closes(丢弃 lookback),
+    # 首个调仓日(≈start)只有 1 个收盘点,mom_60 算不出 → score_universe 剔除全部候选
+    # → 首次调仓空仓(无 buys)。修复后应能直接用 lookback 历史算出因子,首个调仓日就选出股票。
+    d0 = datetime.date(2023, 10, 1)
+    all_dates = [(d0 + datetime.timedelta(days=i)).isoformat() for i in range(70)]
+    lookback_dates = all_dates[:65]   # start 之前的 lookback 历史(65 天)
+    start = all_dates[65]             # 回测区间起点,也是首个调仓日
+    trade_window = all_dates[65:]     # [start, end] 区间内的交易日(仅 5 天)
+    end = trade_window[-1]
+
+    closes = {d: 10.0 + i * 0.05 for i, d in enumerate(all_dates)}  # 持续小幅上涨,便于算出正的 mom_60
+    panel = {"A": _panel("A", [(d, closes[d]) for d in all_dates])}
+    sections = {start: {"A": {"pe": 5, "pb": 1, "total_mv": 100}}}
+    benchmark = [(start, 1000.0), (end, 1000.0)]
+    cfg = {"start_date": start, "end_date": end, "initial_capital": 100000.0, "cost": CostConfig()}
+    factors = [{"key": "mom_60", "weight": 1, "direction": "desc"}]
+
+    r = run_portfolio_backtest(cfg, factors, sections, panel, benchmark, top_n=1)
+
+    assert r["rebalances"], "应有调仓记录"
+    first_rb = r["rebalances"][0]
+    assert first_rb["buys"], "首个调仓日应能用 lookback 历史算出 mom_60 并选出股票,不应空仓"
+    assert any(b["code"] == "A" for b in first_rb["buys"])

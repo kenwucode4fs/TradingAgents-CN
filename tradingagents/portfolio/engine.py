@@ -1,5 +1,6 @@
 """逐月调仓组合回测:防前视(只用<=D数据)、防幸存者偏差(候选来自当时截面)、
 T+1 次日开盘成交、每日净值。纯函数,数据由调用方注入。"""
+import bisect
 from tradingagents.factor import score_universe
 from .rebalance import compute_rebalance
 from .metrics import compute_portfolio_metrics
@@ -24,6 +25,18 @@ def run_portfolio_backtest(config, factor_configs, monthly_sections, price_panel
 
     # 每股 date→row 索引,便于取价与切片
     by_code = {c: {r["date"]: r for r in rows} for c, rows in price_panel.items()}
+
+    # 每股升序 date/close/volume 数组(含 start 之前的 lookback 历史),供因子计算按 <=D 二分取前缀。
+    # price_panel 已是按 date 升序的 list,这里仍防御性排序一次(仅在回测启动时做一次,不在逐日循环里)。
+    hist = {}
+    for c, rows in price_panel.items():
+        rows_sorted = sorted(rows, key=lambda r: r["date"])
+        ds, cs, vs = [], [], []
+        for r in rows_sorted:
+            if r.get("close") is None:
+                continue
+            ds.append(r["date"]); cs.append(r["close"]); vs.append(r.get("volume") or 0)
+        hist[c] = (ds, cs, vs)
 
     holdings, cash = {}, cap0
     rebalances = []
@@ -59,18 +72,15 @@ def run_portfolio_backtest(config, factor_configs, monthly_sections, price_panel
             section = monthly_sections[d]
             stocks = []
             for code, cross in section.items():
-                rows = by_code.get(code)
-                if not rows:
+                ds, cs, vs = hist.get(code, ([], [], []))
+                if not ds:
                     continue
-                closes, vols = [], []
-                for dt in trade_days:
-                    if dt > d:
-                        break
-                    row = rows.get(dt)
-                    if row and row.get("close") is not None:
-                        closes.append(row["close"]); vols.append(row.get("volume") or 0)
-                if not closes:
+                # 二分定位 <= d 的切点:取包含 start 之前 lookback 的全部历史前缀,
+                # 而不是只从 [start,end] 内的 trade_days 取(否则首个调仓日长周期因子算不出)。
+                idx = bisect.bisect_right(ds, d)
+                if idx == 0:
                     continue
+                closes, vols = cs[:idx], vs[:idx]
                 stocks.append({"code": code, "name": code, "industry": "",
                                "cross": cross, "closes": closes, "volumes": vols})
             ranked = score_universe(stocks, factor_configs, top_n)

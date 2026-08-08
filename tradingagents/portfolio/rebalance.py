@@ -51,8 +51,10 @@ def compute_rebalance(target_codes, holdings, prices, cash, cost):
         del new_holdings[code]
 
     # 2) 保留股同样纳入"再平衡预算"总池：先按当前价折现估其市值（不强制卖出零头，简化第一版：
-    #    只对"新进股"用现金买入，保留股维持原持仓）。等权预算 = 可用现金 / 目标总数（含停牌标的，
-    #    停牌标的分不到的那一份预算自然留作现金——见 test_suspended_target_skipped_to_cash）。
+    #    只对"新进股"用现金买入，保留股维持原持仓）。等权预算基准 = 调仓前组合总市值
+    #    （现金 + 保留持仓按当前价估值），而非仅现金——否则换手时分母包含了不动的保留股，
+    #    但分子只有卖出得到的现金，会稀释新进股预算、留下大量闲置现金（破坏等权）。
+    #    停牌标的（无价）分不到的那一份预算自然留作现金——见 test_suspended_target_skipped_to_cash。
     #
     #    买入按含手续费的真实成交总额（amount + comm + transfer）校验可用资金并扣减 cash，
     #    保证资金守恒（cash + 持仓市值 + 已扣手续费 == 调仓前总资产）。为避免 flooring 到
@@ -60,7 +62,10 @@ def compute_rebalance(target_codes, holdings, prices, cash, cost):
     #    BUY_FEE_BUFFER 预留手续费空间，使 amount+fee 通常不超过 budget_each，各笔互不挤占。
     to_buy = [c for c in target_codes if c not in new_holdings and prices.get(c) is not None]
     if target_codes:
-        budget_each = cash / len(target_codes)
+        total_value = cash + sum(
+            new_holdings[c] * prices[c] for c in new_holdings if prices.get(c) is not None
+        )
+        budget_each = total_value / len(target_codes)
         for code in to_buy:
             px = prices[code]
             shares = int(math.floor(budget_each / (px * (1 + BUY_FEE_BUFFER)) / 100) * 100)  # A股 100 整数倍
