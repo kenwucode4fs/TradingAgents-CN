@@ -230,6 +230,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted, onUnmounted } from 'vue'
+import { useRoute } from 'vue-router'
 import dayjs from 'dayjs'
 import { ElMessage } from 'element-plus'
 import { Histogram, VideoPlay, Loading, Refresh } from '@element-plus/icons-vue'
@@ -262,6 +263,8 @@ interface BacktestResult {
   trades?: any[]
   [key: string]: any
 }
+
+const route = useRoute()
 
 // ------- 表单状态 -------
 // 第一版仅 A 股单股，直接输入 6 位代码；提交时后端回测自带数据存在性校验
@@ -460,6 +463,11 @@ function formatDate(v: string | undefined): string {
 }
 
 onMounted(() => {
+  // 从多因子选股榜单跳转过来时，query.symbol 带入股票代码，自动填入表单
+  const symbol = route.query.symbol
+  if (symbol) {
+    stockCode.value = String(symbol)
+  }
   loadHistory()
 })
 </script>

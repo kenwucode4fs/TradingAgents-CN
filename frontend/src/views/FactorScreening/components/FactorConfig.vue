@@ -252,4 +252,3 @@ watch(
   flex-shrink: 0;
 }
 </style>
-</content>
