@@ -1,5 +1,5 @@
 """因子打分选股（子项目 2a）开源打分层。"""
-from typing import List, Optional
+from typing import List
 
 from .factors import FACTORS
 from .scoring import percentile_normalize, weighted_score, rank_topn

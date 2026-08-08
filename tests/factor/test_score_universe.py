@@ -34,3 +34,10 @@ def test_topn_truncates():
 def test_empty_config_raises():
     with pytest.raises(ValueError):
         score_universe([_stock("A", 10, [1.0])], [], top_n=5)
+
+
+def test_topn_nonpositive_raises():
+    stocks = [_stock("A", 10, [1.0])]
+    cfg = [{"key": "pe", "weight": 1, "direction": "asc"}]
+    with pytest.raises(ValueError):
+        score_universe(stocks, cfg, top_n=0)
