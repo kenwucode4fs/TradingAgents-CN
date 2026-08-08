@@ -1,1 +1,4 @@
-"""组合回测引擎（子项目 2b）。占位，Task 6 补 run_portfolio_backtest。"""
+"""组合回测引擎（子项目 2b）。"""
+from .engine import run_portfolio_backtest
+
+__all__ = ["run_portfolio_backtest"]
