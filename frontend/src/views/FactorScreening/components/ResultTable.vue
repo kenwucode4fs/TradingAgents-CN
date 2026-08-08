@@ -1,6 +1,6 @@
 <template>
   <div class="result-table">
-    <el-table :data="items" style="width: 100%" border stripe>
+    <el-table :data="items" style="width: 100%" border stripe @sort-change="handleSortChange">
       <el-table-column prop="rank" label="排名" width="80" sortable align="center" />
 
       <el-table-column prop="code" label="代码" width="100" sortable />
@@ -16,6 +16,7 @@
       <el-table-column
         v-for="key in selectedFactorKeys"
         :key="key"
+        :prop="key"
         :label="key"
         min-width="120"
         align="right"
@@ -45,6 +46,7 @@
 </template>
 
 <script setup lang="ts">
+import { ref } from 'vue'
 import { TrendCharts } from '@element-plus/icons-vue'
 
 // 单个因子的打分明细：value 为原始值，norm 为标准化到 [0,1] 的得分，direction 为该因子的打分方向
@@ -95,15 +97,29 @@ function fmtValue(v: number | null | undefined): string {
   return String(v)
 }
 
-// 动态因子列排序：按该因子的标准化得分 norm 比较，缺失值统一沉底
+// Element Plus 的 el-table 会把 sort-method 的返回值再乘以方向系数（升序 +1 / 降序 -1）
+// 才得到最终比较结果，因此这里记录每个因子列当前的排序方向，用于在缺失值分支中抵消该系数，
+// 让"缺失值沉底"在升序/降序下表现一致；key -> 1(升序)/-1(降序)，仅在该列被排序时才会用到
+const factorSortReverse = ref<Record<string, 1 | -1>>({})
+
+// prop 为空（如点击非因子列）或恢复默认排序时无需处理，交由 el-table 内部逻辑
+function handleSortChange({ prop, order }: { prop: string; order: 'ascending' | 'descending' | null }) {
+  if (!prop) return
+  factorSortReverse.value[prop] = order === 'descending' ? -1 : 1
+}
+
+// 动态因子列排序：按该因子的标准化得分 norm 比较，缺失值无论升序/降序都稳定沉底。
+// reverse * reverse 恒为 1，因此返回 reverse（同号）可抵消 el-table 的方向系数，
+// 使最终比较结果恒为正（该行排后）；返回 -reverse 则恒为负（该行排前）。
 function sortByFactorNorm(a: ResultRow, b: ResultRow, key: string): number {
+  const reverse = factorSortReverse.value[key] ?? 1
   const av = a.factors?.[key]?.norm
   const bv = b.factors?.[key]?.norm
   const aValid = isValidNumber(av)
   const bValid = isValidNumber(bv)
   if (!aValid && !bValid) return 0
-  if (!aValid) return -1
-  if (!bValid) return 1
+  if (!aValid) return reverse
+  if (!bValid) return -reverse
   return av - bv
 }
 </script>
