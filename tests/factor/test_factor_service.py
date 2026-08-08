@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import pytest
 from app.services import factor_screening_service as svc
 from app.core.database import db_manager
@@ -66,33 +68,53 @@ def test_get_candidates_dedup_by_code():
 
 
 @pytest.mark.integration
-def test_fetch_price_series_bounded_by_time_window():
-    """fetch_price_series 需按 LOOKBACK_CALENDAR_DAYS 加 trade_date 下界，避免候选池为
-    全市场（选股域留空的常见用例）时把每股近 20 年全部历史行无界拉进内存排序。"""
+def test_fetch_price_series_query_has_time_window(monkeypatch):
+    """fetch_price_series 需按 LOOKBACK_CALENDAR_DAYS 给 stock_daily_quotes.find 的
+    filter 加 trade_date 下界，避免候选池为全市场（选股域留空的常见用例）时把每股
+    近 20 年全部历史行无界拉进内存排序。
+
+    仅靠"返回序列长度 <= lookback"不足以防回归——客户端 `[-lookback:]` 截尾在
+    未加时间窗的旧代码上也会让长度看起来"正常"，测试仍会误判通过。这里改为
+    直接 spy 住 find() 的调用参数，断言 filter 里确实带了 trade_date 时间窗，
+    这才是真正会在有人误删 `trade_date: {"$gte": cutoff}` 时变红的回归保护。
+    """
     import asyncio
 
     async def _run():
         _reset_mongo_client()
         await svc.ensure_db()
-        # 用全市场候选池（选股域留空，最容易踩坑的用例）触发预取
-        candidates = await svc.get_candidates({})
-        codes = [c["code"] for c in candidates]
-        assert "000001" in codes
+        real_db = svc.get_mongo_db()
+        real_coll = real_db.stock_daily_quotes
+        captured = {}
+
+        class _SpyCollection:
+            def find(self, flt, *a, **kw):
+                captured["filter"] = flt
+                return real_coll.find(flt, *a, **kw)
+
+        class _DBStub:
+            def __getattr__(self, name):
+                if name == "stock_daily_quotes":
+                    return _SpyCollection()
+                return getattr(real_db, name)
+
+        monkeypatch.setattr(svc, "get_mongo_db", lambda: _DBStub())
 
         lookback = 260
-        series = await svc.fetch_price_series(codes, lookback=lookback)
-        n = len(series["000001"]["closes"])
-        # 时间窗生效：不再是全历史（未加时间窗时 000001 有约 5846 行），
-        # 且不超过 lookback + 合理余量（时间窗内可能略多于 lookback，仍会被
-        # 客户端 [-lookback:] 截尾，这里只要不逼近全历史即可）。
-        assert n <= lookback
-        # 仍需覆盖常见短周期因子（如 mom_60）所需的最小长度
-        assert n >= 61
+        series = await svc.fetch_price_series(["000001"], lookback=lookback)
 
-        # 与不加时间窗的真实全历史条数对比，确认确实被大幅裁剪
-        total_hist = await svc.get_mongo_db().stock_daily_quotes.count_documents(
-            {"symbol": "000001", "close_qfq": {"$ne": None}}
-        )
-        assert n < total_hist
+        # 核心断言：查询 filter 里必须带 trade_date 时间窗（防回归）
+        f = captured.get("filter")
+        assert f is not None, "未捕获到 stock_daily_quotes.find 调用"
+        assert "trade_date" in f and "$gte" in f["trade_date"], f"查询未带时间窗: {f}"
+        cutoff = f["trade_date"]["$gte"]
+        today = datetime.now().strftime("%Y%m%d")
+        assert isinstance(cutoff, str) and len(cutoff) == 8 and cutoff < today, \
+            f"cutoff 应为早于今天的 YYYYMMDD 字符串，实际: {cutoff}"
+
+        # 辅助断言：实际返回长度仍受 lookback 约束（不是防回归的主力，仅作辅助校验）
+        n = len(series["000001"]["closes"])
+        assert n <= lookback
+        assert n >= 61  # 仍需覆盖常见短周期因子（如 mom_60）所需的最小长度
 
     asyncio.run(_run())
