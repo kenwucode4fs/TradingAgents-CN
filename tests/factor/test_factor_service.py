@@ -63,3 +63,36 @@ def test_get_candidates_dedup_by_code():
         assert len(codes) < total_docs
 
     asyncio.run(_run())
+
+
+@pytest.mark.integration
+def test_fetch_price_series_bounded_by_time_window():
+    """fetch_price_series 需按 LOOKBACK_CALENDAR_DAYS 加 trade_date 下界，避免候选池为
+    全市场（选股域留空的常见用例）时把每股近 20 年全部历史行无界拉进内存排序。"""
+    import asyncio
+
+    async def _run():
+        _reset_mongo_client()
+        await svc.ensure_db()
+        # 用全市场候选池（选股域留空，最容易踩坑的用例）触发预取
+        candidates = await svc.get_candidates({})
+        codes = [c["code"] for c in candidates]
+        assert "000001" in codes
+
+        lookback = 260
+        series = await svc.fetch_price_series(codes, lookback=lookback)
+        n = len(series["000001"]["closes"])
+        # 时间窗生效：不再是全历史（未加时间窗时 000001 有约 5846 行），
+        # 且不超过 lookback + 合理余量（时间窗内可能略多于 lookback，仍会被
+        # 客户端 [-lookback:] 截尾，这里只要不逼近全历史即可）。
+        assert n <= lookback
+        # 仍需覆盖常见短周期因子（如 mom_60）所需的最小长度
+        assert n >= 61
+
+        # 与不加时间窗的真实全历史条数对比，确认确实被大幅裁剪
+        total_hist = await svc.get_mongo_db().stock_daily_quotes.count_documents(
+            {"symbol": "000001", "close_qfq": {"$ne": None}}
+        )
+        assert n < total_hist
+
+    asyncio.run(_run())

@@ -8,11 +8,18 @@
 "attached to a different loop" 的问题。
 """
 import asyncio
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import app.core.database as db_module
 from app.core.database import get_mongo_db, db_manager
 from tradingagents.factor import score_universe
+
+# fetch_price_series 时间窗下界（自然日）。打分最长的因子是 250 交易日的
+# high_250_prox，260 个交易日 ≈ 375~390 自然日；停牌/节假日会进一步拉长
+# "最近 N 个交易日"对应的自然日跨度，留足余量取约 500 自然日（覆盖
+# ~345 交易日），既足够覆盖默认 lookback=260，又避免不设下界时把每只
+# 股票近 20 年全部历史行（千万级行）拉进内存排序导致 OOM/选股超时。
+LOOKBACK_CALENDAR_DAYS = 500
 
 
 async def ensure_db() -> None:
@@ -109,13 +116,19 @@ def _prefer(new: dict, old: dict) -> bool:
 async def fetch_price_series(codes: list, lookback: int = 260) -> dict:
     """批量从 `stock_daily_quotes` 取每股最近 `lookback` 条前复权序列。
 
+    查询按 `LOOKBACK_CALENDAR_DAYS` 自然日加了 trade_date 下界，避免候选池
+    为全市场（选股域留空的常见用例）时无界拉取每股近 20 年全部历史行导致
+    内存/耗时爆炸；时间窗内每股条数可能略多于 `lookback`，仍用客户端
+    `[-lookback:]` 截尾取最近的 `lookback` 条。
+
     Returns:
         `{code: {"closes": [...], "volumes": [...]}}`，按 trade_date 升序，
         过滤 close_qfq 为 None 的记录。
     """
     proj = {"_id": 0, "symbol": 1, "trade_date": 1, "close_qfq": 1, "volume": 1}
+    cutoff = (datetime.now() - timedelta(days=LOOKBACK_CALENDAR_DAYS)).strftime("%Y%m%d")
     cur = get_mongo_db().stock_daily_quotes.find(
-        {"symbol": {"$in": codes}, "close_qfq": {"$ne": None}}, proj
+        {"symbol": {"$in": codes}, "close_qfq": {"$ne": None}, "trade_date": {"$gte": cutoff}}, proj
     ).sort("trade_date", 1)
     by_code = {}
     async for d in cur:
