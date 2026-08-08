@@ -54,3 +54,19 @@ async def sync_monthly_basic(db, start: str, end: str) -> int:
                 {"code": code, "trade_date": d}, {"$set": doc}, upsert=True)
             written += 1
     return written
+
+
+async def sync_benchmark_index(db, ts_code: str, start: str, end: str) -> int:
+    """回填基准指数(如沪深300 000300.SH)日线收盘到 index_daily_quotes,按 (ts_code, trade_date) upsert。"""
+    from app.services.data_sources.tushare_adapter import TushareAdapter
+    api = TushareAdapter()._provider.api
+    df = api.index_daily(ts_code=ts_code, start_date=start.replace("-", ""), end_date=end.replace("-", ""))
+    if df is None or df.empty:
+        return 0
+    written = 0
+    for _, r in df.iterrows():
+        doc = {"ts_code": ts_code, "trade_date": _to_dash(r["trade_date"]), "close": float(r["close"])}
+        await db.index_daily_quotes.update_one(
+            {"ts_code": ts_code, "trade_date": doc["trade_date"]}, {"$set": doc}, upsert=True)
+        written += 1
+    return written

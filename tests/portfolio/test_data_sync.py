@@ -1,6 +1,11 @@
 import pytest
 
-from app.worker.portfolio_data_sync import _month_end_dates
+from app.worker.portfolio_data_sync import _month_end_dates, _to_dash
+
+
+def test_to_dash_converts_tushare_date():
+    assert _to_dash("20240131") == "2024-01-31"
+    assert _to_dash("2024-01-31") == "2024-01-31"  # 幂等
 
 
 def test_month_end_dates_picks_last_trading_day_per_month():
