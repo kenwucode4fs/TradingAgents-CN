@@ -139,6 +139,29 @@ const routes: RouteRecordRaw[] = [
   },
 
   {
+    path: '/portfolio-backtest',
+    name: 'PortfolioBacktest',
+    component: () => import('@/layouts/BasicLayout.vue'),
+    meta: {
+      title: '组合回测',
+      icon: 'PieChart',
+      requiresAuth: true,
+      transition: 'slide-up'
+    },
+    children: [
+      {
+        path: '',
+        name: 'PortfolioBacktestHome',
+        component: () => import('@/views/PortfolioBacktest/index.vue'),
+        meta: {
+          title: '组合回测',
+          requiresAuth: true
+        }
+      }
+    ]
+  },
+
+  {
     path: '/favorites',
     name: 'Favorites',
     component: () => import('@/layouts/BasicLayout.vue'),

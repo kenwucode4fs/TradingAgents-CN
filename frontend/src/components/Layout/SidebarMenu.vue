@@ -47,6 +47,11 @@
       <template #title>多因子选股</template>
     </el-menu-item>
 
+    <el-menu-item index="/portfolio-backtest">
+      <el-icon><PieChart /></el-icon>
+      <template #title>组合回测</template>
+    </el-menu-item>
+
     <el-menu-item index="/favorites">
       <el-icon><Star /></el-icon>
       <template #title>我的自选股</template>
@@ -124,7 +129,8 @@ import {
   InfoFilled,
   CreditCard,
   Histogram,
-  Filter
+  Filter,
+  PieChart
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
