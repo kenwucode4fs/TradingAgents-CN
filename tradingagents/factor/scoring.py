@@ -36,8 +36,6 @@ def weighted_score(norm_by_factor: Dict[str, float], weights: Dict[str, float]) 
 
 
 def rank_topn(scored: List[dict], n: int) -> List[dict]:
-    """按 score 降序，赋 rank（从 1 起），取前 n。"""
+    """按 score 降序，赋 rank（从 1 起），取前 n。不修改入参。"""
     ordered = sorted(scored, key=lambda x: x["score"], reverse=True)
-    for i, item in enumerate(ordered):
-        item["rank"] = i + 1
-    return ordered[:n]
+    return [{**item, "rank": i + 1} for i, item in enumerate(ordered)][:n]

@@ -1,4 +1,4 @@
-import math
+import pytest
 from tradingagents.factor.scoring import percentile_normalize, weighted_score, rank_topn
 
 
@@ -36,3 +36,17 @@ def test_rank_topn_sorts_and_truncates():
     top = rank_topn(scored, 2)
     assert [x["code"] for x in top] == ["B", "C"]
     assert [x["rank"] for x in top] == [1, 2]
+
+
+def test_percentile_invalid_direction_raises():
+    with pytest.raises(ValueError):
+        percentile_normalize([1.0, 2.0], "bad")
+
+
+def test_percentile_all_none_returns_all_none():
+    assert percentile_normalize([None, None], "desc") == [None, None]
+
+
+def test_weighted_score_nonpositive_weight_raises():
+    with pytest.raises(ValueError):
+        weighted_score({"a": 0.5}, {"a": 0})
