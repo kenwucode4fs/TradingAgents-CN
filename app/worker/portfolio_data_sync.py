@@ -1,5 +1,10 @@
 """组合回测历史数据回填:月末 daily_basic + 沪深300 指数。trade_date 统一 "YYYY-MM-DD"。"""
+import logging
 from typing import List
+
+import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 def _to_dash(d: str) -> str:
@@ -18,13 +23,13 @@ def _month_end_dates(all_trade_dates: List[str], start: str, end: str) -> List[s
 
 
 async def month_end_trade_dates(db, start: str, end: str) -> List[str]:
-    dates = await db.stock_daily_quotes.distinct("trade_date", {"symbol": "000001"})
+    # 用全市场任一股票有记录的交易日作为交易日历（不依赖单只股票，避免其停牌导致漏月份）
+    dates = await db.stock_daily_quotes.distinct("trade_date", {"trade_date": {"$gte": start, "$lte": end}})
     return _month_end_dates([str(d) for d in dates], start, end)
 
 
 def _num(v):
     try:
-        import pandas as pd
         return None if v is None or pd.isna(v) else float(v)
     except (ValueError, TypeError):
         return None
@@ -39,6 +44,7 @@ async def sync_monthly_basic(db, start: str, end: str) -> int:
         tushare_date = d.replace("-", "")  # tushare 要 "YYYYMMDD"
         df = adapter.get_daily_basic(tushare_date)
         if df is None or df.empty:
+            logger.warning(f"portfolio_data_sync: {d}(tushare {tushare_date}) 未拉取到 daily_basic 数据,跳过")
             continue
         for _, r in df.iterrows():
             code = str(r["ts_code"]).split(".")[0]  # 去后缀 → 6 位
