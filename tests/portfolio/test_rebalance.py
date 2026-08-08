@@ -4,11 +4,16 @@ from tradingagents.backtest.types import CostConfig
 COST = CostConfig()
 
 def test_initial_buy_equal_weight():
-    # 空仓，10万资金，买 A/B 两只等权，价 10/20
+    # 空仓，10万资金，买 A/B 两只等权，价 10/20（买入扣手续费后不再是精确 5000/2500，
+    # 断言近似等权 + 资金守恒）
     r = compute_rebalance(["A", "B"], {}, {"A": 10.0, "B": 20.0}, 100000.0, COST)
-    # 每只预算 5 万：A 买 5000 股（5万/10），B 买 2500 股（5万/20），均 100 整数倍
-    assert r["new_holdings"]["A"] == 5000
-    assert r["new_holdings"]["B"] == 2500
+    assert r["new_holdings"]["A"] > 0 and r["new_holdings"]["B"] > 0
+    mv_a = r["new_holdings"]["A"] * 10.0
+    mv_b = r["new_holdings"]["B"] * 20.0
+    assert abs(mv_a - mv_b) / 50000 < 0.05           # 近似等权（5%内）
+    total_fee = sum(b["fee"] for b in r["buys"])
+    # 资金守恒：现金 + 持仓市值 + 买入手续费 == 初始资金
+    assert abs(r["cash"] + mv_a + mv_b + total_fee - 100000.0) < 1e-6
     assert r["cash"] >= 0
 
 def test_sell_dropped_and_buy_new():
