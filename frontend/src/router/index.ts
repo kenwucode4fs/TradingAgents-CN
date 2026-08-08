@@ -116,6 +116,29 @@ const routes: RouteRecordRaw[] = [
   },
 
   {
+    path: '/factor-screening',
+    name: 'FactorScreening',
+    component: () => import('@/layouts/BasicLayout.vue'),
+    meta: {
+      title: '多因子选股',
+      icon: 'Filter',
+      requiresAuth: true,
+      transition: 'slide-up'
+    },
+    children: [
+      {
+        path: '',
+        name: 'FactorScreeningHome',
+        component: () => import('@/views/FactorScreening/index.vue'),
+        meta: {
+          title: '多因子选股',
+          requiresAuth: true
+        }
+      }
+    ]
+  },
+
+  {
     path: '/favorites',
     name: 'Favorites',
     component: () => import('@/layouts/BasicLayout.vue'),

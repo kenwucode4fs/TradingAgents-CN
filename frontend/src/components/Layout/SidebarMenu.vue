@@ -42,6 +42,11 @@
       <template #title>策略回测</template>
     </el-menu-item>
 
+    <el-menu-item index="/factor-screening">
+      <el-icon><Filter /></el-icon>
+      <template #title>多因子选股</template>
+    </el-menu-item>
+
     <el-menu-item index="/favorites">
       <el-icon><Star /></el-icon>
       <template #title>我的自选股</template>
@@ -118,7 +123,8 @@ import {
   Setting,
   InfoFilled,
   CreditCard,
-  Histogram
+  Histogram,
+  Filter
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
