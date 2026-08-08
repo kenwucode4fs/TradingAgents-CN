@@ -18,14 +18,24 @@ router = APIRouter(prefix="/api/portfolio-backtest", tags=["portfolio-backtest"]
 
 
 def _validate(payload: Dict[str, Any]) -> None:
-    """组合回测请求参数校验，非法参数直接 400，不进入后台任务。"""
+    """组合回测请求参数校验，非法参数直接 400，不进入后台任务。
+
+    与 2a `factor_screening._validate` 对齐：每项 factor 必须是含合法
+    `key`（在 `FACTORS` 中）与正 `weight` 的 dict，不接受裸字符串——
+    下游 `score_universe`/`run_portfolio_backtest` 要求 factor 配置为
+    `{"key","weight","direction"}` 结构，宽松兼容只会把本该在这里一次性
+    拒绝的错误拖到后台任务里以模糊异常 `failed`。
+    """
     factors = payload.get("factors") or []
     if not factors:
         raise HTTPException(status_code=400, detail="至少选择一个因子")
     for f in factors:
-        key = f.get("key") if isinstance(f, dict) else f
-        if key not in FACTORS:
-            raise HTTPException(status_code=400, detail=f"未知因子: {key}")
+        if not isinstance(f, dict):
+            raise HTTPException(status_code=400, detail="因子配置必须为对象")
+        if f.get("key") not in FACTORS:
+            raise HTTPException(status_code=400, detail=f"未知因子: {f.get('key')}")
+        if not (f.get("weight", 0) > 0):
+            raise HTTPException(status_code=400, detail="因子权重必须为正")
     if payload.get("top_n", 0) <= 0:
         raise HTTPException(status_code=400, detail="top_n 必须为正")
     start, end = payload.get("start_date"), payload.get("end_date")

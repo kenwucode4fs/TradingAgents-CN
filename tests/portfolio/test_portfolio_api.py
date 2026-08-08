@@ -2,6 +2,10 @@
 
 结构照 2a `tests/factor/test_factor_screening_api.py`：
 - `test_run_bad_params_400` 用空因子列表触发 400，无需真实 MongoDB。
+- `test_run_factor_weight_must_be_positive`/`test_run_factors_must_be_dicts`
+  校验 `_validate` 与 2a `factor_screening._validate` 对齐：factor 必须是
+  含合法 `key`（在 `FACTORS` 中）与正 `weight` 的 dict，裸字符串或非正
+  权重都应在 400 阶段被一次性拒绝，而不是拖到后台任务里以模糊异常 failed。
 - `test_status_result_ownership` 是集成测试，先用 `svc` 直接写入一条属于
   `owner` 的任务/结果记录，再用 `intruder` 身份访问，验证属主校验统一
   返回 404（不泄露 task_id 是否存在）。
@@ -17,6 +21,34 @@ def test_run_bad_params_400():
     try:
         c = TestClient(app)
         r = c.post("/api/portfolio-backtest/run", json={"factors": [], "start_date": "2024-01-01", "end_date": "2024-12-31", "top_n": 20})
+        assert r.status_code == 400
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_run_factor_weight_must_be_positive():
+    from app.main import app
+    from app.routers.auth_db import get_current_user
+    app.dependency_overrides[get_current_user] = lambda: {"id": "u1", "username": "admin"}
+    try:
+        c = TestClient(app)
+        r = c.post("/api/portfolio-backtest/run", json={
+            "factors": [{"key": "pe", "weight": 0}],
+            "start_date": "2024-01-01", "end_date": "2024-12-31", "top_n": 10})
+        assert r.status_code == 400
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_run_factors_must_be_dicts():
+    from app.main import app
+    from app.routers.auth_db import get_current_user
+    app.dependency_overrides[get_current_user] = lambda: {"id": "u1", "username": "admin"}
+    try:
+        c = TestClient(app)
+        r = c.post("/api/portfolio-backtest/run", json={
+            "factors": ["pe"],
+            "start_date": "2024-01-01", "end_date": "2024-12-31", "top_n": 10})
         assert r.status_code == 400
     finally:
         app.dependency_overrides.pop(get_current_user, None)
