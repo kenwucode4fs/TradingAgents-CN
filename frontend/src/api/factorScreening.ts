@@ -5,16 +5,27 @@
 
 import { request, type ApiResponse } from './request'
 
-// 因子选股请求参数
+// 单个因子的打分配置：key 为因子标识，weight 为正数权重，direction 为打分方向
+export interface FactorConfigItem {
+  key: string
+  weight: number
+  direction: 'asc' | 'desc'
+}
+
+// 选股域筛选条件，均为可选：不传/为空表示该维度不过滤
+export interface FactorUniverse {
+  exclude_st?: boolean
+  exclude_new?: boolean
+  industries?: string[]
+  mv_min?: number
+  mv_max?: number
+}
+
+// 因子选股请求参数（与后端 app/routers/factor_screening.py `_validate` 校验的字段一致）
 export interface FactorScreenRunRequest {
-  symbols?: string[]
-  factors?: string[]
-  weights?: Record<string, number>
-  start_date?: string
-  end_date?: string
-  top_n?: number
-  parameters?: Record<string, any>
-  [key: string]: any
+  factors: FactorConfigItem[]
+  universe: FactorUniverse
+  top_n: number
 }
 
 // 因子选股任务创建响应

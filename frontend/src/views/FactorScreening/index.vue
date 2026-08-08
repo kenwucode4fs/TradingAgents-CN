@@ -168,7 +168,12 @@ import { useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { ElMessage } from 'element-plus'
 import { Filter, VideoPlay, Loading, Refresh } from '@element-plus/icons-vue'
-import { factorApi, type FactorScreenRunRequest } from '@/api/factorScreening'
+import {
+  factorApi,
+  type FactorConfigItem,
+  type FactorUniverse,
+  type FactorScreenRunRequest
+} from '@/api/factorScreening'
 import FactorConfig from './components/FactorConfig.vue'
 import ResultTable, { type ResultRow } from './components/ResultTable.vue'
 
@@ -180,13 +185,6 @@ interface FactorMeta {
   name: string
   category: string
   default_direction: Direction
-}
-
-// FactorConfig v-model 契约
-interface FactorConfigItem {
-  key: string
-  weight: number
-  direction: Direction
 }
 
 const router = useRouter()
@@ -232,8 +230,8 @@ function validateForm(): boolean {
   return true
 }
 
-function buildPayload() {
-  const universePayload: Record<string, any> = {
+function buildPayload(): FactorScreenRunRequest {
+  const universePayload: FactorUniverse = {
     exclude_st: universe.excludeSt,
     exclude_new: universe.excludeNew,
     industries: universe.industries
@@ -278,9 +276,7 @@ async function submitScreen() {
   resultItems.value = []
   try {
     const payload = buildPayload()
-    // factorApi.run 的入参类型 FactorScreenRunRequest 里 factors 声明为 string[]，
-    // 与后端实际契约（factors: [{key,weight,direction}]）不一致，此处按实际契约传参
-    const res = await factorApi.run(payload as unknown as FactorScreenRunRequest)
+    const res = await factorApi.run(payload)
     const id = res.data?.task_id
     if (!id) {
       ElMessage.error('未获取到任务ID，请重试')
