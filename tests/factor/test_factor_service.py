@@ -103,18 +103,26 @@ def test_fetch_price_series_query_has_time_window(monkeypatch):
         lookback = 260
         series = await svc.fetch_price_series(["000001"], lookback=lookback)
 
-        # 核心断言：查询 filter 里必须带 trade_date 时间窗（防回归）
+        # 核心断言 1：查询 filter 里必须带 trade_date 时间窗（防"误删时间窗"回归）
         f = captured.get("filter")
         assert f is not None, "未捕获到 stock_daily_quotes.find 调用"
         assert "trade_date" in f and "$gte" in f["trade_date"], f"查询未带时间窗: {f}"
         cutoff = f["trade_date"]["$gte"]
-        today = datetime.now().strftime("%Y%m%d")
-        assert isinstance(cutoff, str) and len(cutoff) == 8 and cutoff < today, \
-            f"cutoff 应为早于今天的 YYYYMMDD 字符串，实际: {cutoff}"
+        today = datetime.now().strftime("%Y-%m-%d")
+        # cutoff 必须是与 stock_daily_quotes.trade_date 一致的带横线
+        # "YYYY-MM-DD" 格式（防"格式不一致导致字符串比较错乱"回归：曾误用
+        # 无横线的 "%Y%m%d"，'-'(0x2D) < '0'(0x30) 导致 "2025-XX-XX" 被误判
+        # 小于 cutoff 而整年被过滤掉）。
+        assert isinstance(cutoff, str) and len(cutoff) == 10 and cutoff.count("-") == 2, \
+            f"cutoff 应为 YYYY-MM-DD 格式，实际: {cutoff}"
+        assert cutoff < today, f"cutoff 应早于今天，实际: {cutoff}"
 
-        # 辅助断言：实际返回长度仍受 lookback 约束（不是防回归的主力，仅作辅助校验）
+        # 核心断言 2：时间窗真的取到了近 LOOKBACK_CALENDAR_DAYS(500) 天的历史，
+        # 而不是因格式不一致只取到当年 ~144 天。500 自然日 ≈ 330 交易日，
+        # 被客户端 [-lookback:] 截到 lookback=260；格式 bug 存在时这里只有
+        # ~144，此断言修复前会失败、修复后通过，是真正的回归保护。
         n = len(series["000001"]["closes"])
+        assert n >= 200, f"时间窗覆盖的历史行数偏少（可能是 cutoff 格式与 trade_date 不一致）: {n}"
         assert n <= lookback
-        assert n >= 61  # 仍需覆盖常见短周期因子（如 mom_60）所需的最小长度
 
     asyncio.run(_run())

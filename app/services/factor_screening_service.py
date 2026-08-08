@@ -126,7 +126,11 @@ async def fetch_price_series(codes: list, lookback: int = 260) -> dict:
         过滤 close_qfq 为 None 的记录。
     """
     proj = {"_id": 0, "symbol": 1, "trade_date": 1, "close_qfq": 1, "volume": 1}
-    cutoff = (datetime.now() - timedelta(days=LOOKBACK_CALENDAR_DAYS)).strftime("%Y%m%d")
+    # trade_date 在 stock_daily_quotes 中统一是带横线的 "YYYY-MM-DD" 格式，
+    # cutoff 必须与之一致才能正确按字符串比较；曾误用无横线的 "%Y%m%d"，
+    # 导致 "2025-XX-XX" 因第 5 位是 '-'（0x2D < '0' 的 0x30）被误判小于
+    # cutoff 而被过滤掉，实际只取到了 cutoff 年份的数据，时间窗严重偏短。
+    cutoff = (datetime.now() - timedelta(days=LOOKBACK_CALENDAR_DAYS)).strftime("%Y-%m-%d")
     cur = get_mongo_db().stock_daily_quotes.find(
         {"symbol": {"$in": codes}, "close_qfq": {"$ne": None}, "trade_date": {"$gte": cutoff}}, proj
     ).sort("trade_date", 1)
