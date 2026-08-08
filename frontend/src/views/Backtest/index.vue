@@ -22,13 +22,14 @@
         <!-- 股票与区间 -->
         <el-row :gutter="24">
           <el-col :span="12">
-            <el-form-item label="股票" required>
-              <div v-if="selectedStock" class="selected-stock">
-                <el-tag type="primary" size="large" closable @close="selectedStock = null">
-                  {{ selectedStock.name }} ({{ selectedStock.code }})
-                </el-tag>
-              </div>
-              <MultiMarketStockSearch v-else @select="handleSelectStock" />
+            <el-form-item label="股票代码" required>
+              <el-input
+                v-model="stockCode"
+                placeholder="输入6位A股代码，如 000001"
+                maxlength="6"
+                clearable
+                style="width: 100%"
+              />
             </el-form-item>
           </el-col>
           <el-col :span="12">
@@ -173,7 +174,7 @@
     <el-card v-if="result" class="result-card" shadow="never">
       <template #header>
         <div class="card-header">
-          <span>回测结果 - {{ result.symbol || selectedStock?.code || '' }}</span>
+          <span>回测结果 - {{ result.symbol || stockCode || '' }}</span>
         </div>
       </template>
 
@@ -233,8 +234,6 @@ import dayjs from 'dayjs'
 import { ElMessage } from 'element-plus'
 import { Histogram, VideoPlay, Loading, Refresh } from '@element-plus/icons-vue'
 import { backtestApi } from '@/api/backtest'
-import MultiMarketStockSearch from '@/components/Global/MultiMarketStockSearch.vue'
-import type { StockInfo } from '@/api/multiMarket'
 import ConditionEditor from './components/ConditionEditor.vue'
 import EquityChart from './components/EquityChart.vue'
 import MetricsCards from './components/MetricsCards.vue'
@@ -265,7 +264,8 @@ interface BacktestResult {
 }
 
 // ------- 表单状态 -------
-const selectedStock = ref<StockInfo | null>(null)
+// 第一版仅 A 股单股，直接输入 6 位代码；提交时后端回测自带数据存在性校验
+const stockCode = ref('')
 const dateRange = ref<[string, string]>([
   dayjs().subtract(1, 'year').format('YYYY-MM-DD'),
   dayjs().format('YYYY-MM-DD')
@@ -283,10 +283,6 @@ const position = reactive<{ parts: number; reduce_mode: 'reduce_one' | 'clear_al
 })
 const buyGroup = ref<ConditionGroup>({ rules: [], logic: 'AND' })
 const sellGroup = ref<ConditionGroup>({ rules: [], logic: 'OR' })
-
-function handleSelectStock(stock: StockInfo) {
-  selectedStock.value = stock
-}
 
 function disabledDate(time: Date) {
   return time.getTime() > Date.now()
@@ -307,8 +303,8 @@ const POLL_INTERVAL = 1500
 const POLL_TIMEOUT = 5 * 60 * 1000 // 5分钟超时
 
 function validateForm(): boolean {
-  if (!selectedStock.value) {
-    ElMessage.warning('请先选择股票')
+  if (!/^\d{6}$/.test(stockCode.value.trim())) {
+    ElMessage.warning('请输入6位A股代码，如 000001')
     return false
   }
   if (!dateRange.value || !dateRange.value[0] || !dateRange.value[1]) {
@@ -328,7 +324,7 @@ function validateForm(): boolean {
 
 function buildPayload() {
   return {
-    symbol: selectedStock.value!.code,
+    symbol: stockCode.value.trim(),
     start_date: dateRange.value[0],
     end_date: dateRange.value[1],
     initial_capital: initialCapital.value,
