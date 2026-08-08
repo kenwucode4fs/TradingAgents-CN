@@ -75,17 +75,35 @@ async def get_candidates(universe: dict) -> list:
     if mv:
         q["total_mv"] = mv
     proj = {"_id": 0, "code": 1, "name": 1, "industry": 1, "pe": 1, "pb": 1,
-            "total_mv": 1, "amount": 1, "close": 1, "list_date": 1}
-    out = []
+            "total_mv": 1, "amount": 1, "close": 1, "list_date": 1, "trade_date": 1}
+    # stock_screening_view 同一 code 可能存在多条记录（同一 trade_date 下
+    # 截面值不一致，甚至 total_mv 缺失），需在应用层按 code 去重，每股只保留
+    # 一条"最优"记录，否则同一代码会被当成多只候选混进榜单。
+    best = {}  # code -> 选中的原始文档
     async for d in get_mongo_db().stock_screening_view.find(q, proj):
         if universe.get("exclude_new") and _is_new(d.get("list_date")):
             continue
+        code = d["code"]
+        cur = best.get(code)
+        if cur is None or _prefer(d, cur):
+            best[code] = d
+    out = []
+    for d in best.values():
         out.append({
             "code": d["code"], "name": d.get("name", ""), "industry": d.get("industry", ""),
             "cross": {"pe": d.get("pe"), "pb": d.get("pb"), "total_mv": d.get("total_mv"),
                       "amount": d.get("amount"), "close": d.get("close")},
         })
     return out
+
+
+def _prefer(new: dict, old: dict) -> bool:
+    """`get_candidates` 去重时，new 是否比 old 更该保留：total_mv 非空优先，其次 trade_date 更新。"""
+    new_has = new.get("total_mv") is not None
+    old_has = old.get("total_mv") is not None
+    if new_has != old_has:
+        return new_has
+    return str(new.get("trade_date") or "") > str(old.get("trade_date") or "")
 
 
 async def fetch_price_series(codes: list, lookback: int = 260) -> dict:
